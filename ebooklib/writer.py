@@ -27,17 +27,16 @@ from typing import IO, Any, Protocol, TypeAlias
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
 
 from lxml import etree
-from lxml.etree import QName  # pylint: disable=E0611
+
 from .book import EpubBook
 from .consts import (
     COMPRESSED,
     CONTAINER_PATH,
     CONTAINER_XML,
     ITEM_DOCUMENT,
-    NAMESPACES,
-    VERSION,
 )
-from .items import EpubCover, EpubHtml, EpubItem, EpubNav, EpubNcx
+from .items import EpubHtml, EpubNav, EpubNcx
+from .opf import OPF3
 from .toc import Link, Section
 from .utils import get_pages_for_items, get_qname, parse_xml, xml_tostring
 
@@ -119,7 +118,7 @@ class EpubWriter:
         self.file_name: EpubTarget | IO[bytes] = name
         self.book = book
 
-        self.options = self.get_default_options()
+        self.options: dict = self.get_default_options()
         if options:
             self.options.update(options)
 
@@ -150,196 +149,10 @@ class EpubWriter:
         container_xml = CONTAINER_XML % {"folder_name": self.book.FOLDER_NAME}
         self.out.writestr(self.zipinfo(CONTAINER_PATH), container_xml)
 
-    def _iter_metadata(self):
-        """Yield ``(value, attributes)`` for every metadata entry."""
-        for ns_values in self.book.metadata.values():
-            for values in ns_values.values():
-                yield from values
-
-    def _has_meta_property(self, prop: str) -> bool:
-        return any(
-            attrib and attrib.get("property") == prop
-            for _, attrib in self._iter_metadata()
-        )
-
-    def _write_opf_metadata(self, root: etree._Element) -> None:
-        nsmap = {"dc": NAMESPACES["DC"]}
-        nsmap.update(self.book.namespaces)
-
-        metadata = etree.SubElement(root, QName(root, "metadata"), nsmap=nsmap)
-
-        # Write these directly instead of adding them to book.metadata: the
-        # writer must not mutate the book, otherwise a second write would keep
-        # the first timestamp and append duplicate provenance entries.
-        if not self._has_meta_property("dcterms:modified"):
-            # The EPUB specification requires dcterms:modified to be a UTC timestamp.
-            # astimezone() treats a naive datetime as local time before converting.
-            mtime_utc = self.options["mtime"].astimezone(timezone.utc)
-            el = etree.SubElement(metadata, QName(root, "meta"),
-                                  {"property": "dcterms:modified"})
-            el.text = mtime_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-        if not self._has_meta_property("dcterms:provenance"):
-            version = ".".join([str(s) for s in VERSION])
-            el = etree.SubElement(metadata, QName(root, "meta"),
-                                  {"property": "dcterms:provenance"})
-            el.text = f"Ebook-lib {version}"
-
-        for ns_name, ns_values in self.book.metadata.items():
-            for name, values in ns_values.items():
-                tag = get_qname(ns_name, name)
-                for value in values:
-                    try:
-                        text, attrib = value
-                        el = etree.SubElement(metadata, tag, attrib)
-                        if text:
-                            el.text = text
-                    except ValueError:
-                        logging.info('Could not create metadata "%s".', name)
-
-    def _write_opf_manifest(self, root: etree._Element) -> str | None:
-        manifest = etree.SubElement(root, QName(root, "manifest"))
-        _ncx_id = None
-
-        # mathml, scripted, svg, remote-resources, and switch
-        # nav
-        # cover-image
-
-        for item in (x for x in self.book.get_items() if x.manifest):
-            item_id = item.id or ""
-            attrib = {"id": item_id,
-                    "href": item.file_name,
-                    "media-type": item.media_type}
-            if isinstance(item, EpubNav):
-                attrib["properties"] = "nav"
-            elif isinstance(item, EpubNcx):
-                _ncx_id = item.id
-            elif isinstance(item, EpubCover):
-                attrib["properties"] = "cover-image"
-            else:
-                properties = getattr(item, "properties", None)
-                if properties:
-                    attrib["properties"] = " ".join(properties)
-
-                media_overlay = getattr(item, "media_overlay", None)
-                if media_overlay is not None:
-                    attrib["media-overlay"] = media_overlay
-
-                media_duration = getattr(item, "media_duration", None)
-                if media_duration is not None:
-                    attrib["duration"] = media_duration
-
-            etree.SubElement(manifest, QName(root, "item"), attrib=attrib)
-
-        return _ncx_id
-
-    def _write_opf_spine(self, root: etree._Element, ncx_id: str | None) -> None:
-        attrib = {"toc": ncx_id or "ncx"}
-        if self.book.direction and self.options["spine_direction"]:
-            attrib["page-progression-direction"] = self.book.direction
-
-        spine = etree.SubElement(root, QName(root, "spine"), attrib=attrib)
-
-        for _item in self.book.spine:
-            # this is for now
-            # later we should be able to fetch things from tuple
-
-            is_linear = True
-
-            if isinstance(_item, tuple):
-                item = _item[0]
-
-                if len(_item) > 1:
-                    if _item[1] == "no":
-                        is_linear = False
-            else:
-                item = _item
-
-            if isinstance(item, EpubHtml):
-                opts = {"idref": item.get_id() or ""}
-
-                if not item.is_linear or not is_linear:
-                    opts["linear"] = "no"
-            elif isinstance(item, EpubItem):
-                opts = {"idref": item.get_id() or ""}
-
-                if not item.is_linear or not is_linear:
-                    opts["linear"] = "no"
-            else:
-                opts = {"idref": item}
-
-                itm = self.book.get_item_with_id(item)
-
-                if itm is not None and (not itm.is_linear or not is_linear):
-                    opts["linear"] = "no"
-
-            etree.SubElement(spine, QName(root, "itemref"), attrib=opts)
-
-    def _write_opf_guide(self, root: etree._Element) -> None:
-        # - http://www.idpf.org/epub/20/spec/OPF_2.0.1_draft.htm#Section2.6
-
-        if not self.book.guide or not self.options.get("epub2_guide"):
-            return
-        guide = etree.SubElement(root, QName(root, "guide"))
-
-        for ref in self.book.guide:
-            item = ref.get("item")
-            if item is not None:
-                _href = item.file_name or ""
-                _title = item.title or ""
-            else:
-                _href = ref.get("href", "")
-                _title = ref.get("title", "")
-            attrib = {"type": ref.get("type", ""),
-                      "title": _title,
-                      "href": _href}
-            etree.SubElement(guide, QName(root, "reference"), attrib=attrib)
-
-    def _write_opf_bindings(self, root: etree._Element) -> None:
-        if not self.book.bindings:
-            return
-        bindings = etree.SubElement(root, QName(root, "bindings"))
-        for attrib in self.book.bindings:
-            etree.SubElement(bindings, QName(root, "mediaType"), attrib=attrib)
-
-    def _write_opf_file(self, root: etree._Element) -> None:
-        self.out.writestr(self.zipinfo(f"{self.book.FOLDER_NAME}/content.opf"), xml_tostring(root))
-
     def _write_opf(self) -> None:
-        prefixes = self.book.prefixes
-        prefix = " ".join(f"{k}: {v}" for k, v in prefixes.items() if k and v)
-        attrib = {
-            "version": "3.0",
-            "unique-identifier": self.book.IDENTIFIER_ID
-        }
-        if prefix:
-            attrib["prefix"] = prefix
-        if self.book.direction and self.options["package_direction"]:
-            attrib["dir"] = self.book.direction
-
-        xmlns = NAMESPACES["OPF"]
-
-        root = etree.Element(QName(xmlns, "package"),
-                             attrib=attrib,
-                             nsmap={None: xmlns})
-
-        # METADATA
-        self._write_opf_metadata(root)
-
-        # MANIFEST
-        _ncx_id = self._write_opf_manifest(root)
-
-        # SPINE
-        self._write_opf_spine(root, _ncx_id)
-
-        # GUIDE
-        self._write_opf_guide(root)
-
-        # BINDINGS
-        self._write_opf_bindings(root)
-
-        # WRITE FILE
-        self._write_opf_file(root)
+        opf = OPF3()
+        self.out.writestr(self.zipinfo(f"{self.book.FOLDER_NAME}/content.opf"),
+                          opf.get_content(self.book, **self.options))
 
     def _get_nav(self, item: EpubNav) -> bytes:
         # just a basic navigation for now

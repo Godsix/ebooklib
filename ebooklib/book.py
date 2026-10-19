@@ -20,6 +20,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Iterator
 from typing import Any
+
 from .consts import CHAPTER_XML, COVER_XML, NAMESPACES, NAV_XML, NCX_XML
 from .items import EpubCover, EpubCoverHtml, EpubHtml, EpubImage, EpubItem
 from .pytype import Prefix
@@ -27,13 +28,17 @@ from .utils import guess_type
 
 
 class EpubBook:
-    def __init__(self) -> None:
-        self.EPUB_VERSION: str | None = None
+    '''Represents an EPUB book in memory.'''
+    EPUB_VERSION: str = "3.0"
+    IDENTIFIER_ID: str = "id"
+    FOLDER_NAME: str = "EPUB"
 
+    def __init__(self) -> None:
         # EPUB version as read from the package document (e.g. "3.0").
         # Set by EpubReader when loading an existing book.
         self.version: str | None = None
-
+        self.identifier_id: str | None = None
+        self.package_dir: str | None = None
         self.reset()
 
         # we should have options here
@@ -48,9 +53,6 @@ class EpubBook:
         self.pages: list[Any] = []
         self.toc: Any = []
         self.bindings: list[dict[str, Any]] = []
-
-        self.IDENTIFIER_ID: str = "id"
-        self.FOLDER_NAME: str = "EPUB"
 
         self._id_html = 0
         self._id_image = 0
@@ -152,15 +154,15 @@ class EpubBook:
         """
 
         # as it is now, it can only be called once
-        c0 = EpubCover(file_name=file_name)
-        c0.content = content
-        self.add_item(c0)
+        cover = EpubCover(file_name=file_name)
+        cover.content = content
+        self.add_item(cover)
 
         if create_page:
-            c1 = EpubCoverHtml(image_name=file_name)
-            self.add_item(c1)
+            cover_page = EpubCoverHtml(image_name=file_name)
+            self.add_item(cover_page)
 
-        self.add_metadata(None, "meta", "", OrderedDict([("name", "cover"), ("content", "cover-img")]))
+        self.add_metadata("OPF", "meta", "", OrderedDict([("name", "cover"), ("content", cover.get_id())]))
 
     def add_author(
         self, author: str, file_as: str | None = None, role: str | None = None, uid: str | None = None
@@ -176,30 +178,35 @@ class EpubBook:
         self.add_metadata("DC", "creator", author, {"id": uid})
 
         if file_as:
-            self.add_metadata(
-                None, "meta", file_as, {"refines": "#" + uid, "property": "file-as", "scheme": "marc:relators"}
-            )
+            self.add_metadata("OPF", "meta", file_as,
+                              {"refines": f"#{uid}",
+                               "property": "file-as",
+                               "scheme": "marc:relators"})
         if role:
-            self.add_metadata(None, "meta", role, {"refines": "#" + uid, "property": "role", "scheme": "marc:relators"})
+            self.add_metadata("OPF", "meta", role,
+                              {"refines": f"#{uid}",
+                               "property": "role",
+                               "scheme": "marc:relators"})
+
+    def _get_metadata(self, namespace: str | None) -> dict:
+        """Add metadata"""
+        ns = NAMESPACES.get(namespace.upper() if namespace else namespace, namespace)
+        ns_map = self.metadata.setdefault(ns, {})
+        return ns_map
 
     def add_metadata(self, namespace: str | None, name: str, value: str, others: dict | None = None) -> None:
         """Add metadata"""
-        ns = NAMESPACES.get(namespace, namespace)
-        ns_map = self.metadata.setdefault(ns, {})
-        ns_names = ns_map.setdefault(name, [])
-        ns_names.append((value, others))
+        ns_map = self._get_metadata(namespace)
+        ns_map.setdefault(name, []).append((value, others))
 
     def get_metadata(self, namespace: str | None, name: str) -> list:
         """Retrieve metadata"""
-
-        ns = NAMESPACES.get(namespace, namespace)
-        return self.metadata[ns].get(name, [])
+        ns_map = self._get_metadata(namespace)
+        return ns_map.get(name, [])
 
     def set_unique_metadata(self, namespace: str | None, name: str, value: str, others: dict | None = None) -> None:
         """Add metadata if metadata with this identifier does not already exist, otherwise update existing metadata."""
-
-        ns = NAMESPACES.get(namespace, namespace)
-        ns_map = self.metadata.setdefault(ns, {})
+        ns_map = self._get_metadata(namespace)
         ns_map[name] = [(value, others)]
 
     def add_item(self, item: EpubItem) -> EpubItem:

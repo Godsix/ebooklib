@@ -15,6 +15,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with EbookLib.  If not, see <http://www.gnu.org/licenses/>.
 from lxml import etree
+
 from ..epub import EpubImage
 from ..utils import parse_html, xml_tostring
 from .base import BasePlugin

@@ -16,7 +16,9 @@
 # along with EbookLib.  If not, see <http://www.gnu.org/licenses/>.
 
 from urllib.parse import urljoin, urlparse
+
 from lxml import etree
+
 from ..utils import get_qname, parse_html
 from .base import BasePlugin
 

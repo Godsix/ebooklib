@@ -69,6 +69,24 @@ COMPRESSED = frozenset({
     ".webm", ".mkv",
 })
 
+DC_ELEMENTS = frozenset({
+    "title",
+    "creator",
+    "subject",
+    "description",
+    "publisher",
+    "contributor",
+    "date",
+    "type",
+    "format",
+    "identifier",
+    "source",
+    "language",
+    "relation",
+    "coverage",
+    "rights",
+})
+
 NAMESPACES: dict[str, str] = {
     "XML": "http://www.w3.org/XML/1998/namespace",
     "EPUB": "http://www.idpf.org/2007/ops",
@@ -78,6 +96,27 @@ NAMESPACES: dict[str, str] = {
     "DC": "http://purl.org/dc/elements/1.1/",
     "XHTML": "http://www.w3.org/1999/xhtml",
 }
+
+# EPUB creators MAY use the following prefixes in package document attributes
+# without having to declare them.
+EPUB_PREFIXES = {
+    "a11y": "http://www.idpf.org/epub/vocab/package/a11y/#",
+    "dcterms": "http://purl.org/dc/terms/",
+    "marc": "http://id.loc.gov/vocabulary/",
+    "media": "http://www.idpf.org/epub/vocab/overlays/#",
+    "onix": "http://www.editeur.org/ONIX/book/codelists/current.html#",
+    "rendition": "http://www.idpf.org/vocab/rendition/#",
+    "schema": "http://schema.org/",
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+}
+
+# EPUB creators MAY use the following reserved prefixes in the epub:type attribute
+# without having to declare them.
+EPUB_TYPE_PREFIXES = {
+    "msv": "http://www.idpf.org/epub/vocab/structure/magazine/#",
+    "prism": "http://www.prismstandard.org/specifications/3.0/PRISM_CV_Spec_3.0.htm#",
+}
+
 
 # XML Templates
 

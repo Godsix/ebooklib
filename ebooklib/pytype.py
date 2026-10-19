@@ -15,7 +15,8 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with EbookLib.  If not, see <http://www.gnu.org/licenses/>.
 
-from typing import TypeAlias, Iterable, Protocol, BinaryIO
+from typing import BinaryIO, Iterable, Protocol, TypeAlias
+
 from lxml import etree, html
 
 ElementTree: TypeAlias = etree._ElementTree
@@ -58,4 +59,12 @@ class FileReader(Protocol):
 
     def close(self) -> None:
         ''' Close file '''
+        ...
+
+    def __enter__(self) -> "FileReader":
+        ''' Enter context '''
+        ...
+
+    def __exit__(self, type, value, traceback):
+        ''' Exit context '''
         ...

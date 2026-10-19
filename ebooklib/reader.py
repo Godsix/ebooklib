@@ -19,29 +19,32 @@
 import os
 import posixpath as zip_path
 import warnings
-from typing import Any, cast
-from urllib.parse import unquote
+from pathlib import Path
+from typing import IO, Any
 from zipfile import ZIP_DEFLATED, BadZipfile, LargeZipFile, ZipFile
 
-from lxml import etree
+from lxml.etree import QName  # pylint: disable=E0611
 
 from .book import EpubBook
-from .consts import CONTAINER_PATH, FONT_MEDIA_TYPES, IMAGE_MEDIA_TYPES, NAMESPACES
+from .consts import CONTAINER_PATH, NAMESPACES
 from .exceptions import EpubException
-from .items import EpubCover, EpubCoverHtml, EpubFont, EpubHtml, EpubImage, EpubItem, EpubNav, EpubNcx, EpubSMIL
+from .items import EpubHtml, EpubNav
+from .opf import OPF3
 from .toc import Link, Section
-from .utils import Directory, get_qname, parse_html, parse_xml
+from .utils import Directory, join_path, parse_html, parse_xml
 
 
 class EpubReader:
+    """EpubReader - loads an EPUB file into an EpubBook."""
     DEFAULT_OPTIONS: dict[str, Any] = {"ignore_ncx": True}
 
     def __init__(self, epub_file_name, options: dict[str, Any] | None = None) -> None:
         self.file_name = epub_file_name
         self.book = EpubBook()
-        self.zf: ZipFile | Directory | None = None
+        self.io: ZipFile | Directory | None = None
+        self.opf: OPF3 | None = None
 
-        self.opf_file = ""
+        self.opf_path = ""
         self.opf_dir = ""
 
         self.options = dict(self.DEFAULT_OPTIONS)
@@ -52,9 +55,11 @@ class EpubReader:
 
     def _check_deprecated(self) -> None:
         if self.options.get("ignore_ncx") is None:
-            warnings.warn("In the future version we will turn default option ignore_ncx to True.", stacklevel=2)
+            _w = ("In the future version we will turn default option ignore_ncx to True.")
+            warnings.warn(_w, stacklevel=2)
 
     def process(self) -> None:
+        """Load EPUB file into EpubBook object."""
         # should cache this html parsing so we don't do it for every plugin
         for plg in self.options.get("plugins", []):
             if hasattr(plg, "after_read"):
@@ -67,195 +72,55 @@ class EpubReader:
                         plg.html_after_read(self.book, item)
 
     def load(self) -> EpubBook:
+        """Load EPUB file into EpubBook object."""
         self._load()
 
         return self.book
 
-    def read_file(self, name: str) -> bytes:
+    def _read(self, *name: str) -> bytes:
         # Raises KeyError for missing items in an archive, OSError for directory sources
-        if self.zf is None:
+        if self.io is None:
             raise EpubException(-1, "EPUB file is not opened")
-
-        name = zip_path.normpath(name)
-        return self.zf.read(name)
+        return self.io.read(join_path(*name))
 
     def _load_container(self) -> None:
-        meta_inf = self.read_file(CONTAINER_PATH)
+        meta_inf = self._read(CONTAINER_PATH)
         tree = parse_xml(meta_inf)
-
-        for root_file in tree.findall(
-            ".//xmlns:rootfile[@media-type]", namespaces={"xmlns": NAMESPACES["CONTAINERNS"]}
-        ):
-            if root_file.get("media-type") == "application/oebps-package+xml":
-                self.opf_file = root_file.get("full-path") or ""
-                self.opf_dir = zip_path.dirname(self.opf_file)
-
-    def _load_metadata(self) -> None:
-        container_root = self.container.getroot()
-
-        # get epub version
-        self.book.version = container_root.get("version", None)
-
-        # get unique-identifier
-        unique_identifier = container_root.get("unique-identifier", None)
-        if unique_identifier:
-            self.book.IDENTIFIER_ID = unique_identifier
-
-        # get xml:lang
-        # get metadata
-        metadata = self.container.find(get_qname('opf', 'metadata'))
-        if metadata is None:
-            raise EpubException(-1, "Can not find metadata element")
-
-        nsmap = metadata.nsmap
-        default_ns = nsmap.get(None, "")
-
-        nsdict: dict[str | None, dict[str, list[Any]]] = {v: {} for v in nsmap.values()}
-
-        def add_item(ns, tag, value, extra):
-            if ns not in nsdict:
-                nsdict[ns] = {}
-
-            values = nsdict[ns].setdefault(tag, [])
-            values.append((value, extra))
-
-        for t in metadata:
-            if not etree.iselement(t) or t.tag is etree.Comment:
-                continue
-            if t.tag == default_ns + "meta":
-                name = t.get("name")
-                others = dict(t.items())
-
-                if name and ":" in name:
-                    prefix, name = name.split(":", 1)
-                else:
-                    prefix = None
-
-                add_item(t.nsmap.get(prefix, prefix), name, t.text, others)
-            else:
-                tag = t.tag[t.tag.rfind("}") + 1 :]
-
-                if (t.prefix and t.prefix.lower() == "dc") and tag == "identifier":
-                    _id = t.get("id", None)
-
-                    if _id:
-                        self.book.IDENTIFIER_ID = _id
-
-                others = dict(t.items())
-                add_item(t.nsmap[t.prefix], tag, t.text, others)
-
-        self.book.metadata = nsdict
-
-        titles = self.book.get_metadata("DC", "title")
-        if len(titles) > 0:
-            self.book.title = titles[0][0]
-
-        for value, others in self.book.get_metadata("DC", "identifier"):
-            if others.get("id") == self.book.IDENTIFIER_ID:
-                self.book.uid = value
-
-    def _load_manifest(self) -> None:
-        manifest = self.container.find(get_qname('opf', 'manifest'))
-        if manifest is None:
-            raise EpubException(-1, "Can not find manifest element")
-
-        opf_item = get_qname('opf', 'item')
-        for r in manifest:
-            if r is not None and r.tag != opf_item:
-                continue
-
-            uid = r.get("id")
-            href = unquote(r.get("href") or "")
-            media_type = r.get("media-type") or ""
-            _properties = r.get("properties", "")
-
-            if _properties:
-                properties = _properties.split(" ")
-            else:
-                properties = []
-
-            # people use wrong content types
-            if media_type == "image/jpg":
-                media_type = "image/jpeg"
-
-            ei: EpubItem
-
-            match media_type:
-                case "application/x-dtbncx+xml":
-                    ei = EpubNcx(uid=uid, file_name=href)
-
-                    ei.content = self.read_file(zip_path.join(self.opf_dir, ei.file_name))
-                case "application/smil+xml":
-                    ei = EpubSMIL(uid=uid, file_name=href)
-
-                    ei.content = self.read_file(zip_path.join(self.opf_dir, ei.file_name))
-                case "application/xhtml+xml" if "nav" in properties:
-                    ei = EpubNav(uid=uid, file_name=href)
-
-                    ei.content = self.read_file(zip_path.join(self.opf_dir, ei.file_name))
-                case "application/xhtml+xml" if "cover" in properties:
-                    ei = EpubCoverHtml()
-
-                    ei.content = self.read_file(zip_path.join(self.opf_dir, href))
-                case "application/xhtml+xml":
-                    ei = EpubHtml()
-
-                    ei.id = uid
-                    ei.file_name = href
-                    ei.media_type = media_type
-                    ei.media_overlay = r.get("media-overlay", None)
-                    ei.media_duration = r.get("duration", None)
-                    ei.content = self.read_file(zip_path.join(self.opf_dir, ei.get_name()))
-                    ei.properties = properties
-                case _ if media_type in IMAGE_MEDIA_TYPES and "cover-image" in properties:
-                    ei = EpubCover(uid=uid, file_name=href)
-
-                    ei.media_type = media_type
-                    ei.content = self.read_file(zip_path.join(self.opf_dir, ei.get_name()))
-                case _ if media_type in IMAGE_MEDIA_TYPES:
-                    ei = EpubImage()
-
-                    ei.id = uid
-                    ei.file_name = href
-                    ei.media_type = media_type
-                    ei.content = self.read_file(zip_path.join(self.opf_dir, ei.get_name()))
-                case _:
-                    # different types
-                    ei = EpubItem()
-
-                    ei.id = uid
-                    ei.file_name = href
-                    ei.media_type = media_type
-
-                    ei.content = self.read_file(zip_path.join(self.opf_dir, ei.get_name()))
-
-            self.book.add_item(ei)
+        tag = QName(NAMESPACES["CONTAINERNS"], "rootfile")
+        media_type = "application/oebps-package+xml"
+        for rootfile in tree.findall(f".//{tag}[@media-type='{media_type}']"):
+            self.opf_path = rootfile.get("full-path") or ""
+            self.opf_dir = zip_path.dirname(self.opf_path)
+        self.book.package_dir = self.opf_dir
 
     def _parse_ncx(self, data: bytes) -> None:
         tree = parse_xml(data)
-        tree_root = tree.getroot()
+        root = tree.getroot()
 
-        nav_map = tree_root.find(get_qname("daisy", "navMap"))
+        nav_map = root.find(QName(root, "navMap"))
 
-        def _get_children(elems, n, nid):
+        nav_label = QName(root, "navLabel")
+        nav_content = QName(root, "content")
+        nav_point = QName(root, "navPoint")
+
+        def _get_children(elements, n, nid):
             label, content = "", ""
             children = []
 
-            for a in elems:
-                if a.tag == get_qname("daisy", "navLabel"):
-                    label = a[0].text
-                if a.tag == get_qname("daisy", "content"):
-                    content = a.get("src", "")
-                if a.tag == get_qname("daisy", "navPoint"):
-                    children.append(_get_children(a, n + 1, a.get("id", "")))
+            for child in elements:
+                if child.tag == nav_label:
+                    label = child[0].text
+                if child.tag == nav_content:
+                    content = child.get("src", "")
+                if child.tag == nav_point:
+                    children.append(_get_children(child, n + 1, child.get("id", "")))
 
-            if len(children) > 0:
+            if children:
                 if n == 0:
                     return children
 
                 return (Section(label, href=content), children)
-            else:
-                return Link(content, label, nid)
+            return Link(content, label, nid)
 
         self.book.toc = _get_children(nav_map, 0, "")
 
@@ -263,10 +128,10 @@ class EpubReader:
         html_node = parse_html(data)
         if navtype == "toc":
             # parsing the table of contents
-            nav_node = cast("list[etree._Element]", html_node.xpath("//nav[@*='toc']"))[0]
+            nav_node = html_node.xpath("//nav[@*='toc']")[0]
         else:
             # parsing the list of pages
-            _page_list = cast("list[etree._Element]", html_node.xpath("//nav[@*='page-list']"))
+            _page_list = html_node.xpath("//nav[@*='page-list']")
             if len(_page_list) == 0:
                 return
             nav_node = _page_list[0]
@@ -310,88 +175,67 @@ class EpubReader:
                     htmlfiles[htmlfile.file_name] = htmlfile
             for page in self.book.pages:
                 try:
-                    (filename, idref) = page.href.split("#")
+                    filename, idref = page.href.split("#")
                 except ValueError:
                     filename = page.href
                 if filename in htmlfiles:
                     htmlfiles[filename].pages.append(page)
 
-    def _load_spine(self) -> None:
-        spine = self.container.find(get_qname('opf', 'spine'))
-        if spine is None:
-            raise EpubException(-1, "Can not find spine element")
-
-        self.book.spine = [(t.get("idref"), t.get("linear", "yes")) for t in spine]
-
-        toc = spine.get("toc", "")
-        self.book.set_direction(spine.get("page-progression-direction", None))
-
-        # should read ncx or nav file
-        nav_item = next((item for item in self.book.items if isinstance(item, EpubNav)), None)
-        if toc:
-            if not self.options.get("ignore_ncx") or not nav_item:
-                ncx_item = self.book.get_item_with_id(toc)
-
-                if ncx_item is None:
-                    raise EpubException(-1, "Can not find ncx file.")
-
-                try:
-                    ncxFile = self.read_file(zip_path.join(self.opf_dir, ncx_item.get_name()))
-                except KeyError:
-                    raise EpubException(-1, "Can not find ncx file.") from None
-
-                self._parse_ncx(ncxFile)
-
-    def _load_guide(self) -> None:
-        guide = self.container.find(get_qname('opf', 'guide'))
-        if guide is not None:
-            self.book.guide = [{"href": t.get("href"), "title": t.get("title"), "type": t.get("type")} for t in guide]
-
     def _load_opf_file(self) -> None:
         try:
-            s = self.read_file(self.opf_file)
+            s = self._read(self.opf_path)
         except KeyError:
             raise EpubException(-1, "Can not find container file") from None
 
-        self.container = parse_xml(s)
+        self.opf = OPF3(zip_path.basename(self.opf_path))
+        self.opf.set_content(s, self.io, self.book, **self.options)
 
-        self._load_metadata()
-        self._load_manifest()
-        self._load_spine()
-        self._load_guide()
-
-        # read nav file if found
+        toc = self.opf.spine.get("toc", "")
         nav_item = next((item for item in self.book.items if isinstance(item, EpubNav)), None)
+        if toc and (not self.options.get("ignore_ncx") or not nav_item):
+            # should read ncx or nav file
+            ncx_item = self.book.get_item_with_id(toc)
+            if ncx_item is None:
+                raise EpubException(-1, "Can not find ncx file.")
+            try:
+                ncx = self._read(self.opf_dir, ncx_item.get_name())
+            except KeyError:
+                raise EpubException(-1, "Can not find ncx file.") from None
+            self._parse_ncx(ncx)
+        # read nav file if found
         if nav_item:
+            nav_dir = zip_path.dirname(nav_item.file_name)
             if self.options.get("ignore_ncx") or not self.book.toc:
-                self._parse_nav(nav_item.content, zip_path.dirname(nav_item.file_name), navtype="toc")
-            self._parse_nav(nav_item.content, zip_path.dirname(nav_item.file_name), navtype="pages")
+                self._parse_nav(nav_item.content, nav_dir, navtype="toc")
+            self._parse_nav(nav_item.content, nav_dir, navtype="pages")
+
+    def _io(self, path: Path | IO[bytes]) -> IO[bytes]:
+        if isinstance(path, Path):
+            if path.is_dir():
+                return Directory(path)
+            if not path.is_file():
+                raise FileNotFoundError(f"{path} is not a file or directory.")
+        return ZipFile(path, "r", compression=ZIP_DEFLATED, allowZip64=True)
 
     def _load(self) -> None:
-        self.zf = None
-
-        file_name = self.file_name
-        if isinstance(file_name, bytes):
-            # bytes filesystem paths are decoded so both branches below get str
-            file_name = os.fsdecode(file_name)
-
-        if isinstance(file_name, str | os.PathLike):
-            if os.path.isdir(file_name):
-                self.zf = Directory(file_name)
-
-        if self.zf is None:
+        if isinstance(self.file_name, (str, os.PathLike)):
+            source = Path(self.file_name)
+        elif isinstance(self.file_name, bytes):
+            source = Path(os.fsdecode(self.file_name))
+        else:
+            source = self.file_name
+        if self.io is None:
             try:
-                self.zf = ZipFile(file_name, "r", compression=ZIP_DEFLATED, allowZip64=True)
+                with self._io(source) as zf:
+                    self.io = zf
+                    # 1st check metadata
+                    self._load_container()
+                    self._load_opf_file()
+                self.io = None
             except BadZipfile:
                 raise EpubException(0, "Bad Zip file") from None
             except LargeZipFile:
                 raise EpubException(1, "Large Zip file") from None
-
-        # 1st check metadata
-        self._load_container()
-        self._load_opf_file()
-
-        self.zf.close()
 
 
 def read_epub(name, options: dict[str, Any] | None = None) -> EpubBook:

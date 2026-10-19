@@ -381,9 +381,11 @@ class TestEbook:
         assert book.get_metadata("DC", "subject") == [("Fiction", None)]
         assert book.get_metadata("DC", "contributor") == [("Editor", {"role": "edt"})]
         assert book.get_metadata(None, "meta") == [
-            ("", {"name": "cover", "content": "cover-img"}),
             ("", {"name": "key", "content": "value"}),
             ("", {"name": "key2", "content": "value2"}),
+        ]
+        assert book.get_metadata("OPF", "meta") == [
+            ("", {"name": "cover", "content": "cover-img"}),
         ]
 
     def test_epubbook_add_metadata(self):

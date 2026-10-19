@@ -14,20 +14,19 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with EbookLib.  If not, see <http://www.gnu.org/licenses/>.
 # pylint: disable=I1101
-import re
-import posixpath
 import mimetypes
+import posixpath
+import re
 from io import BytesIO
 from os import PathLike
 from pathlib import Path
 
 from lxml import etree
-from lxml.etree import QName, XMLParser  # pylint: disable=E0611
-from lxml.html import HTMLParser, XHTMLParser, document_fromstring, xhtml_to_html
+from lxml.etree import QName, XMLParser, XMLSyntaxError  # pylint: disable=E0611
+from lxml.html import HTMLParser, XHTMLParser, document_fromstring, html_to_xhtml
 
 from .consts import NAMESPACES
 from .pytype import ElementTree, HtmlElement, XmlElement
-
 
 LXML_DECLARATION = re.compile(b"<\\?xml[^>]+?\\?>")
 PATTERN_NEWLINE = re.compile('[\r\n]+')
@@ -135,9 +134,12 @@ def parse_xml(value: PathLike | str | bytes) -> ElementTree:
 
 
 def parse_xhtml(value: PathLike | str | bytes) -> ElementTree:
-    '''Parse XHTML file and convert it to HTML.'''
-    tree = _etree_parse(value, parser=_xhtml_parser())
-    xhtml_to_html(tree)
+    '''Parse XHTML file or Parse HTML file and convert it to XHTML.'''
+    try:
+        tree = _etree_parse(value, parser=_xhtml_parser())
+    except XMLSyntaxError:
+        tree = _etree_parse(value, parser=_html_parser())
+    html_to_xhtml(tree)
     return tree
 
 
@@ -286,3 +288,11 @@ class Directory:
         No-op: Directory is always open.
         """
         pass
+
+    def __enter__(self) -> "Directory":
+        ''' Enter context '''
+        return self
+
+    def __exit__(self, type, value, traceback):
+        ''' Exit context '''
+        self.close()
