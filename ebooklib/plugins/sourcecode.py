@@ -1,3 +1,4 @@
+# pylint: disable=missing-module-docstring, missing-class-docstring, no-name-in-module
 # This file is part of EbookLib.
 # Copyright (c) 2013 Aleksandar Erkalovic <aerkalov@gmail.com>
 #
@@ -14,10 +15,10 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with EbookLib.  If not, see <http://www.gnu.org/licenses/>.
 
-from typing import cast
+from lxml import etree, html
 
-from ebooklib.plugins.base import BasePlugin
-from ebooklib.utils import parse_html_string
+from ..utils import parse_html
+from .base import BasePlugin
 
 
 class SourceHighlighter(BasePlugin):
@@ -25,13 +26,19 @@ class SourceHighlighter(BasePlugin):
         pass
 
     def html_before_write(self, book, chapter):
-        from lxml import etree, html
-        from pygments import highlight
-        from pygments.formatters import HtmlFormatter
+        # Pygments is an optional dependency of this plugin, so import it lazily.
+        try:
+            from pygments import highlight
+            from pygments.formatters import HtmlFormatter
+            from pygments.lexers import CssLexer, PythonLexer
+        except ImportError as exc:
+            raise ImportError(
+                "SourceHighlighter requires the optional 'pygments' package."
+            ) from exc
 
         try:
-            tree = parse_html_string(chapter.content)
-        except Exception:
+            tree = parse_html(chapter.content)
+        except Exception:  # pylint: disable=broad-exception-caught
             return
 
         had_source = False
@@ -39,22 +46,18 @@ class SourceHighlighter(BasePlugin):
         body = tree.find("body")
         if body is not None and len(body) != 0:
             # check for embeded source
-            for source in cast("list[etree._Element]", body.xpath('//pre[contains(@class,"source-")]')):
-                css_class = source.get("class") or ""
+            for source in body.xpath('//pre[contains(@class,"source-")]'):
+                css_class = source.get("class", "")
 
                 source_text = (source.text or "") + "".join([html.tostring(child) for child in source.iterchildren()])
 
                 _text = None
 
                 if "source-python" in css_class:
-                    from pygments.lexers import PythonLexer
-
-                    #                    _text =  highlight(source_text, PythonLexer(), HtmlFormatter(linenos="inline"))
+                    # _text =  highlight(source_text, PythonLexer(), HtmlFormatter(linenos="inline"))
                     _text = highlight(source_text, PythonLexer(), HtmlFormatter())
 
                 if "source-css" in css_class:
-                    from pygments.lexers import CssLexer
-
                     _text = highlight(source_text, CssLexer(), HtmlFormatter())
 
                 if _text is None:
@@ -64,7 +67,6 @@ class SourceHighlighter(BasePlugin):
                 _parent = source.getparent()
                 if _parent is not None:
                     _parent.replace(source, etree.XML(_text))
-
                     had_source = True
 
         if had_source:

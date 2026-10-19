@@ -1,3 +1,4 @@
+# pylint: disable=missing-module-docstring, missing-class-docstring, missing-function-docstring, c-extension-no-member
 # This file is part of EbookLib.
 # Copyright (c) 2013 Aleksandar Erkalovic <aerkalov@gmail.com>
 #
@@ -13,9 +14,10 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with EbookLib.  If not, see <http://www.gnu.org/licenses/>.
-
-from ebooklib.plugins.base import BasePlugin
-from ebooklib.utils import parse_html_string
+from lxml import etree
+from ..epub import EpubImage
+from ..utils import parse_html, xml_tostring
+from .base import BasePlugin
 
 # TODO:
 #   - should also look for the _required_ elements
@@ -65,240 +67,285 @@ DEPRECATED_TAGS = [
 ]
 
 
-def leave_only(item, tag_list):
-    for _attr in list(item.attrib.keys()):
-        if _attr not in tag_list:
-            del item.attrib[_attr]
+def leave_only(item, *tags: str):
+    # Accept both the historical ``leave_only(item, ["href"])`` form and the
+    # newer ``leave_only(item, "href")`` form.
+    if len(tags) == 1 and isinstance(tags[0], (list, tuple, set, frozenset)):
+        tags = set(tags[0])
+    else:
+        tags = set(tags)
+    for key in list(item.attrib):
+        if key not in tags:
+            del item.attrib[key]
+
+def leave_except(item, *tags):
+    for key in tags:
+        item.attrib.pop(key, None)
+
+
+HEAD_ATTRIBUTES = {
+    "base": ["href", "target"],
+    "link": ["href", "crossorigin", "rel", "media", "hreflang", "type", "sizes"],
+    "meta": ["name", "http-equiv", "content", "charset"],
+    "script": ["src", "type", "charset", "async", "defer", "crossorigin"],
+    "source": ["src", "type", "media"],
+    "style": ["media", "type", "scoped"],
+}
+
+BODY_ATTRIBUTES = {
+    "a": ["href", "target", "download", "rel", "hreflang", "type"],
+    "area": ["alt", "coords", "shape", "href", "target", "download", "rel", "hreflang", "type"],
+    "audio": [
+        "src",
+        "crossorigin",
+        "preload",
+        "autoplay",
+        "mediagroup",
+        "loop",
+        "muted",
+        "controls",
+    ],
+    "blockquote": ["cite"],
+    "button": [
+        "autofocus",
+        "disabled",
+        "form",
+        "formaction",
+        "formenctype",
+        "formmethod",
+        "formnovalidate",
+        "formtarget",
+        "name",
+        "type",
+        "value",
+        "menu",
+    ],
+    "canvas": ["width", "height"],
+    "del": ["cite", "datetime"],
+    "details": ["open"],
+    "embed": ["src", "type", "width", "height"],
+    "fieldset": ["disabled", "form", "name"],
+    "form": [
+        "accept-charset",
+        "action",
+        "autocomplete",
+        "enctype",
+        "method",
+        "name",
+        "novalidate",
+        "target",
+    ],
+    "iframe": [
+        "src",
+        "srcdoc",
+        "name",
+        "sandbox",
+        "seamless",
+        "allowfullscreen",
+        "width",
+        "height"
+    ],
+    "img": [
+        "alt",
+        "src",
+        "crossorigin",
+        "usemap",
+        "ismap",
+        "width",
+        "height",
+    ],
+    "input": [
+        "accept",
+        "alt",
+        "autocomplete",
+        "autofocus",
+        "checked",
+        "dirname",
+        "disabled",
+        "form",
+        "formaction",
+        "formenctype",
+        "formmethod",
+        "formnovalidate",
+        "formtarget",
+        "height",
+        "inputmode",
+        "list",
+        "max",
+        "maxlength",
+        "min",
+        "multiple",
+        "name",
+        "pattern",
+        "placeholder",
+        "readonly",
+        "required",
+        "size",
+        "src",
+        "steptype",
+        "value",
+        "width",
+    ],
+    "ins": ["cite", "datetime"],
+    "keygen": [
+        "autofocus",
+        "challenge",
+        "disabled",
+        "form",
+        "keytype",
+        "name",
+    ],
+    "label": ["for", "form"],
+    "map": ["name"],
+    "menu": ["type", "label"],
+    "object": [
+        "data",
+        "type",
+        "typemustmatch",
+        "name",
+        "usemap",
+        "form",
+        "width",
+        "height",
+    ],
+    "ol": ["reversed", "start", "type"],
+    "optgroup": ["disabled", "label"],
+    "option": ["disabled", "selected", "label", "value"],
+    "output": ["for", "form", "name"],
+    "param": ["name", "value"],
+    "progress": ["value", "max"],
+    "q": ["cite"],
+    "select": [
+        "autofocus",
+        "disabled",
+        "form",
+        "multiple",
+        "name",
+        "required",
+        "size",
+    ],
+    "table": ["border", "sortable"],
+    "td": ["colspan", "rowspan", "headers"],
+    "textarea": [
+        "autocomplete",
+        "autofocus",
+        "cols",
+        "dirname",
+        "disabled",
+        "form",
+        "inputmode",
+        "maxlength",
+        "name",
+        "placeholder",
+        "readonly",
+        "required",
+        "rows",
+        "wrap",
+    ],
+    "col": ["span"],
+    "colgroup": ["span"],
+    "th": ["colspan", "rowspan", "headers", "scope", "abbr", "sorted"],
+
+    "time": ["datetime"],
+    "track": ["kind", "src", "srclang", "label", "default"],
+    "video": [
+        "src",
+        "crossorigin",
+        "poster",
+        "preload",
+        "autoplay",
+        "mediagroup",
+        "loop",
+        "muted",
+        "controls",
+        "width",
+        "height",
+    ],
+}
 
 
 class SyntaxPlugin(BasePlugin):
     NAME = "Check HTML syntax"
 
     def html_before_write(self, book, chapter):
-        from lxml import etree
-
         try:
-            tree = parse_html_string(chapter.content)
-        except Exception:
+            tree = parse_html(chapter.content)
+        except Exception:  # pylint: disable=broad-exception-caught
             return
-
-        root = tree.getroottree()
 
         # delete deprecated tags
         # i should really have a list of allowed tags
         for tag in DEPRECATED_TAGS:
-            etree.strip_tags(root, tag)
+            etree.strip_tags(tree.getroottree(), tag)
 
         head = tree.find("head")
 
-        if head is not None and len(head) != 0:
-            for _item in head:
-                match _item.tag:
-                    case "base":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["href", "target"])
-                    case "link":
-                        leave_only(
-                            _item,
-                            ATTRIBUTES_GLOBAL + ["href", "crossorigin", "rel", "media", "hreflang", "type", "sizes"],
-                        )
+        if head is not None:
+            for child in head:
+                match child.tag:
+                    case "base" | "link" | "script" | "source" | "style":
+                        leave_only(child,
+                                   *ATTRIBUTES_GLOBAL,
+                                   *HEAD_ATTRIBUTES[child.tag])
                     case "title":
-                        if _item.text == "":
-                            head.remove(_item)
+                        if not child.text:
+                            head.remove(child)
                     case "meta":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["name", "http-equiv", "content", "charset"])
+                        leave_only(child,
+                                   *ATTRIBUTES_GLOBAL,
+                                   *HEAD_ATTRIBUTES[child.tag])
                         # just remove for now, but really should not be like this
-                        head.remove(_item)
-                    case "script":
-                        leave_only(
-                            _item, ATTRIBUTES_GLOBAL + ["src", "type", "charset", "async", "defer", "crossorigin"]
-                        )
-                    case "source":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["src", "type", "media"])
-                    case "style":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["media", "type", "scoped"])
+                        head.remove(child)
                     case _:
-                        leave_only(_item, ATTRIBUTES_GLOBAL)
+                        leave_only(child, *ATTRIBUTES_GLOBAL)
 
         body = tree.find("body")
 
         if body is not None and len(body) != 0:
-            for _item in body.iter():
+            for child in body.iter():
                 # it is not
                 # <a class="indexterm" href="ch05.html#ix_epub:trigger_element">
 
-                match _item.tag:
-                    case "a":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["href", "target", "download", "rel", "hreflang", "type"])
-                    case "area":
-                        leave_only(
-                            _item,
-                            ATTRIBUTES_GLOBAL
-                            + ["alt", "coords", "shape", "href", "target", "download", "rel", "hreflang", "type"],
-                        )
-                    case "audio":
-                        leave_only(
-                            _item,
-                            ATTRIBUTES_GLOBAL
-                            + ["src", "crossorigin", "preload", "autoplay", "mediagroup", "loop", "muted", "controls"],
-                        )
-                    case "blockquote":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["cite"])
-                    case "button":
-                        leave_only(
-                            _item,
-                            ATTRIBUTES_GLOBAL
-                            + [
-                                "autofocus",
-                                "disabled",
-                                "form",
-                                "formaction",
-                                "formenctype",
-                                "formmethod",
-                                "formnovalidate",
-                                "formtarget",
-                                "name",
-                                "type",
-                                "value",
-                                "menu",
-                            ],
-                        )
-                    case "canvas":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["width", "height"])
-                    case "del":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["cite", "datetime"])
-                    case "details":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["open"])
-                    case "embed":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["src", "type", "width", "height"])
-                    case "fieldset":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["disable", "form", "name"])
-                    case "form":
-                        leave_only(
-                            _item,
-                            ATTRIBUTES_GLOBAL
-                            + [
-                                "accept-charset",
-                                "action",
-                                "autocomplete",
-                                "enctype",
-                                "method",
-                                "name",
-                                "novalidate",
-                                "target",
-                            ],
-                        )
-                    case "iframe":
-                        leave_only(
-                            _item,
-                            ATTRIBUTES_GLOBAL
-                            + ["src", "srcdoc", "name", "sandbox", "seamless", "allowfullscreen", "width", "height"],
-                        )
+                match child.tag:
+                    case ("a" | "area" | "audio" | "blockquote" | "button"
+                          | "canvas" | "del" | "details" | "embed" | "fieldset"
+                          | "form" | "iframe" | "input" | "ins" | "keygen"
+                          | "label" | "map" | "menu" | "object" | "ol"
+                          | "optgroup" | "option" | "output" | "param"
+                          | "progress" | "q" | "select" | "td" | "textarea"
+                          | "col" | "colgroup" | "th"
+                          | "time" | "track" | "video"):
+                        leave_only(child,
+                                   *ATTRIBUTES_GLOBAL,
+                                   *BODY_ATTRIBUTES[child.tag])
                     case "img":
-                        _src = _item.get("src", "").lower()
-                        if _src.startswith(("http://", "https://")):
+                        _src = child.get("src", "")
+                        if _src.lower().startswith(("http://", "https://")):
                             if "remote-resources" not in chapter.properties:
                                 chapter.properties.append("remote-resources")
                                 # THIS DOES NOT WORK, ONLY VIDEO AND AUDIO FILES CAN BE REMOTE RESOURCES
                                 # THAT MEANS I SHOULD ALSO CATCH <SOURCE TAG
-                                from ebooklib import epub
-
-                                _img = epub.EpubImage(file_name=_item.get("src") or "")
-                                book.add_item(_img)
-                        leave_only(
-                            _item,
-                            ATTRIBUTES_GLOBAL + ["alt", "src", "crossorigin", "usemap", "ismap", "width", "height"],
-                        )
-                    case "input":
-                        leave_only(
-                            _item,
-                            ATTRIBUTES_GLOBAL
-                            + [
-                                "accept",
-                                "alt",
-                                "autocomplete",
-                                "autofocus",
-                                "checked",
-                                "dirname",
-                                "disabled",
-                                "form",
-                                "formaction",
-                                "formenctype",
-                                "formmethod",
-                                "formnovalidate",
-                                "formtarget",
-                                "height",
-                                "inputmode",
-                                "list",
-                                "max",
-                                "maxlength",
-                                "min",
-                                "multiple",
-                                "name",
-                                "pattern",
-                                "placeholder",
-                                "readonly",
-                                "required",
-                                "size",
-                                "src",
-                                "steptype",
-                                "value",
-                                "width",
-                            ],
-                        )
-                    case "ins":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["cite", "datetime"])
-                    case "keygen":
-                        leave_only(
-                            _item, ATTRIBUTES_GLOBAL + ["autofocus", "challenge", "disabled", "form", "keytype", "name"]
-                        )
-                    case "label":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["form", "for"])
-                    case "map":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["name"])
-                    case "menu":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["type", "label"])
-                    case "object":
-                        leave_only(
-                            _item,
-                            ATTRIBUTES_GLOBAL
-                            + ["data", "type", "typemustmatch", "name", "usemap", "form", "width", "height"],
-                        )
-                    case "ol":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["reversed", "start", "type"])
-                    case "optgroup":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["disabled", "label"])
-                    case "option":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["disabled", "label", "selected", "value"])
-                    case "output":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["for", "form", "name"])
-                    case "param":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["name", "value"])
-                    case "progress":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["value", "max"])
-                    case "q":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["cite"])
-                    case "select":
-                        leave_only(
-                            _item,
-                            ATTRIBUTES_GLOBAL
-                            + ["autofocus", "disabled", "form", "multiple", "name", "required", "size"],
-                        )
+                                book.add_item(EpubImage(file_name=_src))
+                        leave_only(child,
+                                   *ATTRIBUTES_GLOBAL,
+                                   *BODY_ATTRIBUTES[child.tag])
                     case "table":
-                        if _item.get("border", None):
-                            if _item.get("border") == "0":
-                                _item.set("border", "")
+                        if child.get("border", None):
+                            if child.get("border") == "0":
+                                child.set("border", "")
 
-                        if _item.get("summary", None):
-                            _caption = etree.Element("caption", {})
-                            _caption.text = _item.get("summary")
-                            _item.insert(0, _caption)
+                        if child.get("summary", None):
+                            _caption = etree.Element("caption")
+                            _caption.text = child.get("summary")
+                            child.insert(0, _caption)
 
                             # add it as caption
-                            del _item.attrib["summary"]
-
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["border", "sortable"])
+                            del child.attrib["summary"]
+                        leave_only(child,
+                                   *ATTRIBUTES_GLOBAL,
+                                   *BODY_ATTRIBUTES[child.tag])
                     case "dl":
-                        _d = _item.find("dd")
+                        _d = child.find("dd")
                         if _d is not None and len(_d) == 0:
                             pass
 
@@ -310,72 +357,13 @@ class SyntaxPlugin(BasePlugin):
                             #   dd
                             #   dt
                             #   dd
-                    case "td":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["colspan", "rowspan", "headers"])
-                    case "textarea":
-                        leave_only(
-                            _item,
-                            ATTRIBUTES_GLOBAL
-                            + [
-                                "autocomplete",
-                                "autofocus",
-                                "cols",
-                                "dirname",
-                                "disabled",
-                                "form",
-                                "inputmode",
-                                "maxlength",
-                                "name",
-                                "placeholder",
-                                "readonly",
-                                "required",
-                                "rows",
-                                "wrap",
-                            ],
-                        )
-                    case "col" | "colgroup":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["span"])
-                    case "th":
-                        leave_only(
-                            _item, ATTRIBUTES_GLOBAL + ["colspan", "rowspan", "headers", "scope", "abbr", "sorted"]
-                        )
-                    case "time":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["datetime"])
-                    case "track":
-                        leave_only(_item, ATTRIBUTES_GLOBAL + ["kind", "src", "srclang", "label", "default"])
-                    case "video":
-                        leave_only(
-                            _item,
-                            ATTRIBUTES_GLOBAL
-                            + [
-                                "src",
-                                "crossorigin",
-                                "poster",
-                                "preload",
-                                "autoplay",
-                                "mediagroup",
-                                "loop",
-                                "muted",
-                                "controls",
-                                "width",
-                                "height",
-                            ],
-                        )
                     case "svg":
                         # We need to add property "svg" in case we have embeded svg file
                         if "svg" not in chapter.properties:
                             chapter.properties.append("svg")
-
-                        if _item.get("viewbox", None):
-                            del _item.attrib["viewbox"]
-
-                        if _item.get("preserveaspectratio", None):
-                            del _item.attrib["preserveaspectratio"]
+                        leave_except(child, "viewbox", "preserveaspectratio")
                     case _:
-                        for _attr in list(_item.attrib.keys()):
-                            if _attr not in ATTRIBUTES_GLOBAL:
-                                del _item.attrib[_attr]
+                        leave_only(child, *ATTRIBUTES_GLOBAL)
 
-        chapter.content = etree.tostring(tree, pretty_print=True, encoding="utf-8", xml_declaration=True)
-
+        chapter.content = xml_tostring(tree)
         return chapter.content

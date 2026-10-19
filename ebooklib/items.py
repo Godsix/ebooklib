@@ -14,20 +14,38 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with EbookLib.  If not, see <http://www.gnu.org/licenses/>.
 
+# pylint: disable=E0611, I1101
 """Items which can be part of an EPUB book."""
-
 import posixpath as zip_path
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, Any, cast
+from copy import deepcopy
+from typing import TYPE_CHECKING, Any
 
 from lxml import etree
-
-import ebooklib
-from ebooklib.consts import NAMESPACES
-from ebooklib.utils import parse_html_string, parse_string
+from lxml.etree import QName  # pylint: disable=E0611
+from lxml.html import html_to_xhtml, xhtml_to_html
+from .consts import (
+    EXTENSIONS,
+    ITEM_COVER,
+    ITEM_DOCUMENT,
+    ITEM_FONT,
+    ITEM_IMAGE,
+    ITEM_SCRIPT,
+    ITEM_SMIL,
+    ITEM_STYLE,
+    ITEM_UNKNOWN,
+    NAMESPACES
+)
+from .pytype import ElementTree
+from .utils import (parse_html,
+                    parse_xml,
+                    xml_tostring,
+                    xhtml_tostring,
+                    format_uri,
+                    get_qname)
 
 if TYPE_CHECKING:
-    from ebooklib.book import EpubBook
+    from .book import EpubBook
 
 
 class EpubItem:
@@ -59,6 +77,23 @@ class EpubItem:
         self.manifest = manifest
 
         self.book: EpubBook | None = None
+
+    @property
+    def file_name(self):
+        """
+        Returns file name for this item.
+
+        :Returns:
+          Returns file name as string.
+        """
+        return getattr(self, "_file_name", "")
+
+    @file_name.setter
+    def file_name(self, value):
+        """
+        Sets file name for this item.
+        """
+        self._file_name = format_uri(value or "")
 
     def get_id(self) -> str | None:
         """
@@ -95,7 +130,7 @@ class EpubItem:
           - ITEM_DOCUMENT = 9
           - ITEM_COVER = 10
 
-        We map type according to the extensions which are defined in ebooklib.EXTENSIONS.
+        We map type according to the extensions which are defined in EXTENSIONS.
 
         :Returns:
           Returns type of the item as number.
@@ -103,11 +138,11 @@ class EpubItem:
         _, ext = zip_path.splitext(self.get_name())
         ext = ext.lower()
 
-        for uid, ext_list in ebooklib.EXTENSIONS.items():
+        for uid, ext_list in EXTENSIONS.items():
             if ext in ext_list:
                 return uid
 
-        return ebooklib.ITEM_UNKNOWN
+        return ITEM_UNKNOWN
 
     def get_content(self, default: str | bytes | None = None) -> str | bytes:
         """
@@ -120,9 +155,7 @@ class EpubItem:
         :Returns:
           Returns content of the item.
         """
-        if default is None:
-            default = b""
-        return self.content or default
+        return self.content or default or b""
 
     def set_content(self, content: str | bytes) -> None:
         """
@@ -134,17 +167,22 @@ class EpubItem:
         self.content = content
 
     def __str__(self) -> str:
-        return f"<EpubItem:{self.id}>"
+        return repr(self)
+
+    def __repr__(self) -> str:
+        cls_name = self.__class__.__name__
+        if self.file_name:
+            return f"<{cls_name}:{self.id}:{self.file_name}>"
+        return f"<{cls_name}:{self.id}>"
 
 
 class EpubNcx(EpubItem):
     """Represents Navigation Control File (NCX) in the EPUB."""
 
     def __init__(self, uid: str | None = "ncx", file_name: str = "toc.ncx") -> None:
-        super().__init__(uid=uid, file_name=file_name, media_type="application/x-dtbncx+xml")
-
-    def __str__(self) -> str:
-        return f"<EpubNcx:{self.id}>"
+        super().__init__(uid=uid,
+                         file_name=file_name,
+                         media_type="application/x-dtbncx+xml")
 
 
 class EpubCover(EpubItem):
@@ -152,21 +190,17 @@ class EpubCover(EpubItem):
     Represents Cover image in the EPUB file.
     """
 
-    def __init__(self, uid: str | None = "cover-img", file_name: str = "") -> None:
-        super().__init__(uid=uid, file_name=file_name)
+    def __init__(self, uid: str | None = "cover-img", file_name: str = "", media_type: str = "") -> None:
+        super().__init__(uid=uid, file_name=file_name, media_type=media_type)
 
     def get_type(self) -> int:
-        return ebooklib.ITEM_COVER
-
-    def __str__(self) -> str:
-        return f"<EpubCover:{self.id}:{self.file_name}>"
+        return ITEM_COVER
 
 
 class EpubHtml(EpubItem):
     """
     Represents HTML document in the EPUB file.
     """
-
     _template_name = "chapter"
 
     def __init__(
@@ -206,13 +240,13 @@ class EpubHtml(EpubItem):
 
     def get_type(self) -> int:
         """
-        Always returns ebooklib.ITEM_DOCUMENT as type of this document.
+        Always returns ITEM_DOCUMENT as type of this document.
 
         :Returns:
-          Always returns ebooklib.ITEM_DOCUMENT
+          Always returns ITEM_DOCUMENT
         """
 
-        return ebooklib.ITEM_DOCUMENT
+        return ITEM_DOCUMENT
 
     def set_language(self, lang: str | None) -> None:
         """
@@ -284,11 +318,14 @@ class EpubHtml(EpubItem):
         :Args:
           - item: item we want to add defined as instance of EpubItem
         """
-        if item.get_type() == ebooklib.ITEM_STYLE:
-            self.add_link(href=item.get_name(), rel="stylesheet", type="text/css")
+        if item.get_type() == ITEM_STYLE:
+            self.add_link(href=item.get_name(),
+                          rel="stylesheet",
+                          type="text/css")
 
-        if item.get_type() == ebooklib.ITEM_SCRIPT:
-            self.add_link(src=item.get_name(), type="text/javascript")
+        if item.get_type() == ITEM_SCRIPT:
+            self.add_link(src=item.get_name(),
+                          type="text/javascript")
 
     def get_body_content(self) -> bytes:
         """
@@ -299,14 +336,14 @@ class EpubHtml(EpubItem):
         """
 
         try:
-            html_tree = parse_html_string(self.content)
+            html_tree = parse_html(self.content)
         except Exception:
             return b""
 
         body = html_tree.find("body")
 
         if body is not None and len(body) != 0:
-            tree_str = etree.tostring(body, pretty_print=True, encoding="utf-8", xml_declaration=False)
+            tree_str = xml_tostring(body, xml_declaration=False)
 
             # this is so stupid
             if tree_str.startswith(b"<body>"):
@@ -337,7 +374,7 @@ class EpubHtml(EpubItem):
         if template is None:
             raise ValueError(f"Book does not define template {self._template_name!r}.")
 
-        tree = parse_string(template)
+        tree = parse_xml(template)
         tree_root = tree.getroot()
 
         tree_root.set("lang", self.lang or book.language)
@@ -347,7 +384,7 @@ class EpubHtml(EpubItem):
         #  <meta charset="utf-8" />
 
         try:
-            html_tree = parse_html_string(self.content)
+            html_tree = parse_html(self.content)
         except Exception:
             return b""
 
@@ -381,12 +418,9 @@ class EpubHtml(EpubItem):
 
         body = html_tree.find("body")
         if body is not None:
-            for i in list(body):
-                _body.append(i)
+            _body.extend(x for x in body)
 
-        tree_str = etree.tostring(tree, pretty_print=True, encoding="utf-8", xml_declaration=True)
-
-        return tree_str
+        return xhtml_tostring(tree)
 
     def __str__(self) -> str:
         return f"<EpubHtml:{self.id}:{self.file_name}>"
@@ -423,26 +457,20 @@ class EpubCoverHtml(EpubHtml):
           Returns content of this document.
         """
 
-        book = self.book
-        if book is None:
-            raise ValueError("EpubCoverHtml item is not attached to a book. Call book.add_item() first.")
+        if self.book is None:
+            raise ValueError("EpubCoverHtml item is not attached to a book. "
+                             "Call book.add_item() first.")
 
-        self.content = book.get_template("cover") or b""
+        self.content = self.book.get_template("cover") or b""
 
-        tree = parse_string(super().get_content())
-        tree_root = tree.getroot()
+        tree = parse_xml(super().get_content())
+        root = tree.getroot()
 
-        images = cast("list[etree._Element]", tree_root.xpath("//xhtml:img", namespaces={"xhtml": NAMESPACES["XHTML"]}))
+        image = next(root.iter(get_qname("xhtml", "img")))
 
-        images[0].set("src", self.image_name)
-        images[0].set("alt", self.title)
-
-        tree_str = etree.tostring(tree, pretty_print=True, encoding="utf-8", xml_declaration=True)
-
-        return tree_str
-
-    def __str__(self) -> str:
-        return f"<EpubCoverHtml:{self.id}:{self.file_name}>"
+        image.set("src", self.image_name)
+        image.set("alt", self.title)
+        return xml_tostring(tree)
 
 
 class EpubNav(EpubHtml):
@@ -458,7 +486,11 @@ class EpubNav(EpubHtml):
         title: str = "",
         direction: str | None = None,
     ) -> None:
-        super().__init__(uid=uid, file_name=file_name, media_type=media_type, title=title, direction=direction)
+        super().__init__(uid=uid,
+                         file_name=file_name,
+                         media_type=media_type,
+                         title=title,
+                         direction=direction)
 
     def is_chapter(self) -> bool:
         """
@@ -470,9 +502,6 @@ class EpubNav(EpubHtml):
 
         return False
 
-    def __str__(self) -> str:
-        return f"<EpubNav:{self.id}:{self.file_name}>"
-
 
 class EpubImage(EpubItem):
     """
@@ -480,18 +509,31 @@ class EpubImage(EpubItem):
     """
 
     def get_type(self) -> int:
-        return ebooklib.ITEM_IMAGE
+        return ITEM_IMAGE
 
-    def __str__(self) -> str:
-        return f"<EpubImage:{self.id}:{self.file_name}>"
+
+class EpubFont(EpubItem):
+    """
+    Represents Font in the EPUB file.
+    """
+
+    def get_type(self) -> int:
+        return ITEM_FONT
 
 
 class EpubSMIL(EpubItem):
-    def __init__(self, uid: str | None = None, file_name: str = "", content: str | bytes | None = None) -> None:
-        super().__init__(uid=uid, file_name=file_name, media_type="application/smil+xml", content=content)
+    """
+    Represents SMIL(Synchronized Multimedia Integration Language) in the EPUB file.
+    """
+
+    def __init__(self,
+                 uid: str | None = None,
+                 file_name: str = "",
+                 content: str | bytes | None = None) -> None:
+        super().__init__(uid=uid,
+                         file_name=file_name,
+                         media_type="application/smil+xml",
+                         content=content)
 
     def get_type(self) -> int:
-        return ebooklib.ITEM_SMIL
-
-    def __str__(self) -> str:
-        return f"<EpubSMIL:{self.id}:{self.file_name}>"
+        return ITEM_SMIL

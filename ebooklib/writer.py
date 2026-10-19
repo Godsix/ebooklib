@@ -1,3 +1,4 @@
+# pylint: disable=missing-module-docstring, missing-class-docstring, missing-function-docstring, c-extension-no-member
 # This file is part of EbookLib.
 # Copyright (c) 2013 Aleksandar Erkalovic <aerkalov@gmail.com>
 #
@@ -16,22 +17,29 @@
 
 """EpubWriter - serialises an EpubBook to an EPUB file."""
 
-import datetime
 import logging
 import os
 import os.path
 import posixpath as zip_path
-import zipfile
-from typing import IO, Any, Protocol, TypeAlias, cast
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import IO, Any, Protocol, TypeAlias
+from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
 
 from lxml import etree
-
-import ebooklib
-from ebooklib.book import EpubBook
-from ebooklib.consts import CONTAINER_PATH, CONTAINER_XML, NAMESPACES
-from ebooklib.items import EpubCover, EpubHtml, EpubItem, EpubNav, EpubNcx
-from ebooklib.toc import Link, Section
-from ebooklib.utils import get_pages_for_items, parse_string
+from lxml.etree import QName  # pylint: disable=E0611
+from .book import EpubBook
+from .consts import (
+    COMPRESSED,
+    CONTAINER_PATH,
+    CONTAINER_XML,
+    ITEM_DOCUMENT,
+    NAMESPACES,
+    VERSION,
+)
+from .items import EpubCover, EpubHtml, EpubItem, EpubNav, EpubNcx
+from .toc import Link, Section
+from .utils import get_pages_for_items, get_qname, parse_xml, xml_tostring
 
 logger = logging.getLogger(__name__)
 
@@ -67,11 +75,11 @@ class EpubWriter:
     @classmethod
     def get_default_options(cls) -> dict[str, Any]:
         default = dict(cls.DEFAULT_OPTIONS)
-        default["mtime"] = datetime.datetime.now(datetime.timezone.utc)
+        default["mtime"] = datetime.now(timezone.utc)
         return default
 
     @classmethod
-    def datetime_to_zipinfo_datetime(cls, dt: datetime.datetime) -> tuple[int, int, int, int, int, int]:
+    def datetime_to_zipinfo_datetime(cls, dt: datetime) -> tuple[int, int, int, int, int, int]:
         """
         Converts a datetime object to a tuple format compatible with zipfile.ZipInfo.
 
@@ -87,11 +95,28 @@ class EpubWriter:
             dt = dt.astimezone()
         return (dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second)
 
-    def zipinfo(self, name: str) -> zipfile.ZipInfo:
-        return zipfile.ZipInfo(name, self.datetime_to_zipinfo_datetime(self.options["mtime"]))
+    def zipinfo(self, name: str) -> ZipInfo:
+        info = ZipInfo(name, self.datetime_to_zipinfo_datetime(self.options["mtime"]))
+        suffix = Path(name).suffix.lower()
+        if suffix in COMPRESSED:
+            info.compress_type = ZIP_STORED
+        else:
+            info.compress_type = ZIP_DEFLATED
+            compresslevel = self.options["compresslevel"]
+            if hasattr(info, 'compress_level'):
+                info.compress_level = compresslevel
+            else:
+                # Python 3.10-3.12
+                info._compresslevel = compresslevel  # pylint: disable=protected-access
+        if info.is_dir():  # pragma: no cover
+            info.external_attr = 0o40775 << 16  # drwxrwxr-x
+            info.external_attr |= 0x10  # MS-DOS directory flag
+        else:
+            info.external_attr = 0o600 << 16  # ?rw-------
+        return info
 
     def __init__(self, name: EpubTarget, book: EpubBook, options: dict[str, Any] | None = None) -> None:
-        self.file_name = name
+        self.file_name: EpubTarget | IO[bytes] = name
         self.book = book
 
         self.options = self.get_default_options()
@@ -125,100 +150,95 @@ class EpubWriter:
         container_xml = CONTAINER_XML % {"folder_name": self.book.FOLDER_NAME}
         self.out.writestr(self.zipinfo(CONTAINER_PATH), container_xml)
 
+    def _iter_metadata(self):
+        """Yield ``(value, attributes)`` for every metadata entry."""
+        for ns_values in self.book.metadata.values():
+            for values in ns_values.values():
+                yield from values
+
+    def _has_meta_property(self, prop: str) -> bool:
+        return any(
+            attrib and attrib.get("property") == prop
+            for _, attrib in self._iter_metadata()
+        )
+
     def _write_opf_metadata(self, root: etree._Element) -> None:
-        nsmap = {"dc": NAMESPACES["DC"], "opf": NAMESPACES["OPF"]}
+        nsmap = {"dc": NAMESPACES["DC"]}
         nsmap.update(self.book.namespaces)
 
-        metadata = etree.SubElement(root, "metadata", nsmap=nsmap)
+        metadata = etree.SubElement(root, QName(root, "metadata"), nsmap=nsmap)
 
-        el = etree.SubElement(metadata, "meta", {"property": "dcterms:modified"})
-        # The EPUB specification requires dcterms:modified to be a UTC timestamp.
-        # astimezone() treats a naive datetime as local time before converting.
-        mtime_utc = self.options["mtime"].astimezone(datetime.timezone.utc)
-        el.text = mtime_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Write these directly instead of adding them to book.metadata: the
+        # writer must not mutate the book, otherwise a second write would keep
+        # the first timestamp and append duplicate provenance entries.
+        if not self._has_meta_property("dcterms:modified"):
+            # The EPUB specification requires dcterms:modified to be a UTC timestamp.
+            # astimezone() treats a naive datetime as local time before converting.
+            mtime_utc = self.options["mtime"].astimezone(timezone.utc)
+            el = etree.SubElement(metadata, QName(root, "meta"),
+                                  {"property": "dcterms:modified"})
+            el.text = mtime_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        for ns_name, values in self.book.metadata.items():
-            if ns_name == NAMESPACES["OPF"]:
-                for values2 in values.values():
-                    for v in values2:
-                        if "property" in v[1] and v[1]["property"] == "dcterms:modified":
-                            continue
-                        try:
-                            el = etree.SubElement(metadata, "meta", v[1])
-                            if v[0]:
-                                el.text = v[0]
-                        except ValueError:
-                            logging.error("Could not create metadata.")
-            else:
-                for name, values2 in values.items():
-                    for v in values2:
-                        try:
-                            if ns_name:
-                                el = etree.SubElement(metadata, f"{{{ns_name}}}{name}", v[1])
-                            else:
-                                el = etree.SubElement(metadata, name, v[1])
+        if not self._has_meta_property("dcterms:provenance"):
+            version = ".".join([str(s) for s in VERSION])
+            el = etree.SubElement(metadata, QName(root, "meta"),
+                                  {"property": "dcterms:provenance"})
+            el.text = f"Ebook-lib {version}"
 
-                            el.text = v[0]
-                        except ValueError:
-                            logging.info(f'Could not create metadata "{name}".')
+        for ns_name, ns_values in self.book.metadata.items():
+            for name, values in ns_values.items():
+                tag = get_qname(ns_name, name)
+                for value in values:
+                    try:
+                        text, attrib = value
+                        el = etree.SubElement(metadata, tag, attrib)
+                        if text:
+                            el.text = text
+                    except ValueError:
+                        logging.info('Could not create metadata "%s".', name)
 
     def _write_opf_manifest(self, root: etree._Element) -> str | None:
-        manifest = etree.SubElement(root, "manifest")
+        manifest = etree.SubElement(root, QName(root, "manifest"))
         _ncx_id = None
 
         # mathml, scripted, svg, remote-resources, and switch
         # nav
         # cover-image
 
-        for item in self.book.get_items():
-            if not item.manifest:
-                continue
-
+        for item in (x for x in self.book.get_items() if x.manifest):
             item_id = item.id or ""
-
+            attrib = {"id": item_id,
+                    "href": item.file_name,
+                    "media-type": item.media_type}
             if isinstance(item, EpubNav):
-                etree.SubElement(
-                    manifest,
-                    "item",
-                    {"href": item.get_name(), "id": item_id, "media-type": item.media_type, "properties": "nav"},
-                )
+                attrib["properties"] = "nav"
             elif isinstance(item, EpubNcx):
                 _ncx_id = item.id
-                etree.SubElement(
-                    manifest, "item", {"href": item.file_name, "id": item_id, "media-type": item.media_type}
-                )
-
             elif isinstance(item, EpubCover):
-                etree.SubElement(
-                    manifest,
-                    "item",
-                    {"href": item.file_name, "id": item_id, "media-type": item.media_type, "properties": "cover-image"},
-                )
+                attrib["properties"] = "cover-image"
             else:
-                opts = {"href": item.file_name, "id": item_id, "media-type": item.media_type}
-
                 properties = getattr(item, "properties", None)
                 if properties:
-                    opts["properties"] = " ".join(properties)
+                    attrib["properties"] = " ".join(properties)
 
                 media_overlay = getattr(item, "media_overlay", None)
                 if media_overlay is not None:
-                    opts["media-overlay"] = media_overlay
+                    attrib["media-overlay"] = media_overlay
 
                 media_duration = getattr(item, "media_duration", None)
                 if media_duration is not None:
-                    opts["duration"] = media_duration
+                    attrib["duration"] = media_duration
 
-                etree.SubElement(manifest, "item", opts)
+            etree.SubElement(manifest, QName(root, "item"), attrib=attrib)
 
         return _ncx_id
 
     def _write_opf_spine(self, root: etree._Element, ncx_id: str | None) -> None:
-        spine_attributes = {"toc": ncx_id or "ncx"}
+        attrib = {"toc": ncx_id or "ncx"}
         if self.book.direction and self.options["spine_direction"]:
-            spine_attributes["page-progression-direction"] = self.book.direction
+            attrib["page-progression-direction"] = self.book.direction
 
-        spine = etree.SubElement(root, "spine", spine_attributes)
+        spine = etree.SubElement(root, QName(root, "spine"), attrib=attrib)
 
         for _item in self.book.spine:
             # this is for now
@@ -253,51 +273,55 @@ class EpubWriter:
                 if itm is not None and (not itm.is_linear or not is_linear):
                     opts["linear"] = "no"
 
-            etree.SubElement(spine, "itemref", opts)
+            etree.SubElement(spine, QName(root, "itemref"), attrib=opts)
 
     def _write_opf_guide(self, root: etree._Element) -> None:
         # - http://www.idpf.org/epub/20/spec/OPF_2.0.1_draft.htm#Section2.6
 
-        if len(self.book.guide) > 0 and self.options.get("epub2_guide"):
-            guide = etree.SubElement(root, "guide", {})
+        if not self.book.guide or not self.options.get("epub2_guide"):
+            return
+        guide = etree.SubElement(root, QName(root, "guide"))
 
-            for item in self.book.guide:
-                chap = item.get("item")
-                if chap is not None:
-                    _href = chap.file_name
-                    _title = chap.title
-                else:
-                    _href = item.get("href", "")
-                    _title = item.get("title", "")
-
-                _ref = etree.SubElement(
-                    guide, "reference", {"type": item.get("type", ""), "title": _title or "", "href": _href or ""}
-                )
+        for ref in self.book.guide:
+            item = ref.get("item")
+            if item is not None:
+                _href = item.file_name or ""
+                _title = item.title or ""
+            else:
+                _href = ref.get("href", "")
+                _title = ref.get("title", "")
+            attrib = {"type": ref.get("type", ""),
+                      "title": _title,
+                      "href": _href}
+            etree.SubElement(guide, QName(root, "reference"), attrib=attrib)
 
     def _write_opf_bindings(self, root: etree._Element) -> None:
-        if len(self.book.bindings) > 0:
-            bindings = etree.SubElement(root, "bindings", {})
-            for item in self.book.bindings:
-                etree.SubElement(bindings, "mediaType", item)
+        if not self.book.bindings:
+            return
+        bindings = etree.SubElement(root, QName(root, "bindings"))
+        for attrib in self.book.bindings:
+            etree.SubElement(bindings, QName(root, "mediaType"), attrib=attrib)
 
     def _write_opf_file(self, root: etree._Element) -> None:
-        tree_str = etree.tostring(root, pretty_print=True, encoding="utf-8", xml_declaration=True)
-
-        self.out.writestr(self.zipinfo(f"{self.book.FOLDER_NAME}/content.opf"), tree_str)
+        self.out.writestr(self.zipinfo(f"{self.book.FOLDER_NAME}/content.opf"), xml_tostring(root))
 
     def _write_opf(self) -> None:
-        package_attributes = {
-            "xmlns": NAMESPACES["OPF"],
-            "unique-identifier": self.book.IDENTIFIER_ID,
+        prefixes = self.book.prefixes
+        prefix = " ".join(f"{k}: {v}" for k, v in prefixes.items() if k and v)
+        attrib = {
             "version": "3.0",
+            "unique-identifier": self.book.IDENTIFIER_ID
         }
+        if prefix:
+            attrib["prefix"] = prefix
         if self.book.direction and self.options["package_direction"]:
-            package_attributes["dir"] = self.book.direction
+            attrib["dir"] = self.book.direction
 
-        root = etree.Element("package", package_attributes)
+        xmlns = NAMESPACES["OPF"]
 
-        prefixes = ["rendition: http://www.idpf.org/vocab/rendition/#"] + self.book.prefixes
-        root.attrib["prefix"] = " ".join(prefixes)
+        root = etree.Element(QName(xmlns, "package"),
+                             attrib=attrib,
+                             nsmap={None: xmlns})
 
         # METADATA
         self._write_opf_metadata(root)
@@ -319,11 +343,11 @@ class EpubWriter:
 
     def _get_nav(self, item: EpubNav) -> bytes:
         # just a basic navigation for now
-        nav_xml = parse_string(self.book.get_template("nav") or b"")
+        nav_xml = parse_xml(self.book.get_template("nav") or b"")
         root = nav_xml.getroot()
 
         root.set("lang", self.book.language)
-        root.attrib[f"{{{NAMESPACES['XML']}}}lang"] = self.book.language
+        root.attrib[get_qname("xml", "lang")] = self.book.language
 
         nav_dir_name = os.path.dirname(item.file_name)
 
@@ -332,15 +356,16 @@ class EpubWriter:
         title.text = item.title or self.book.title
 
         # for now this just handles css files and ignores others
-        for _link in item.links:
-            _lnk = etree.SubElement(
-                head, "link", {"href": _link.get("href", ""), "rel": "stylesheet", "type": "text/css"}
-            )
+        for link in item.links:
+            opts = {"href": link.get("href", ""),
+                    "rel": "stylesheet",
+                    "type": "text/css"}
+            _ = etree.SubElement(head, "link", opts)
 
         body = etree.SubElement(root, "body")
         if item.direction:
             body.set("dir", item.direction)
-        epub_type_attr = f"{{{NAMESPACES['EPUB']}}}type"
+        epub_type_attr = get_qname("epub", "type")
         nav = etree.SubElement(
             body,
             "nav",
@@ -354,30 +379,36 @@ class EpubWriter:
         content_title = etree.SubElement(nav, "h2")
         content_title.text = item.title or self.book.title
 
-        def _create_section(itm, items):
-            ol = etree.SubElement(itm, "ol")
+        def _create_section(node, items):
+            ol = etree.SubElement(node, "ol")
             for item in items:
                 if isinstance(item, tuple | list):
+                    parent, children, *_ = item
                     li = etree.SubElement(ol, "li")
-                    if isinstance(item[0], EpubHtml):
-                        a = etree.SubElement(li, "a", {"href": zip_path.relpath(item[0].file_name, nav_dir_name)})
-                    elif isinstance(item[0], Section) and item[0].href != "":
-                        a = etree.SubElement(li, "a", {"href": zip_path.relpath(item[0].href, nav_dir_name)})
-                    elif isinstance(item[0], Link):
-                        a = etree.SubElement(li, "a", {"href": zip_path.relpath(item[0].href, nav_dir_name)})
+                    if isinstance(parent, EpubHtml):
+                        href = zip_path.relpath(parent.file_name, nav_dir_name)
+                        a = etree.SubElement(li, "a", {"href": href})
+                    elif isinstance(parent, Section) and parent.href != "":
+                        href = zip_path.relpath(parent.href, nav_dir_name)
+                        a = etree.SubElement(li, "a", {"href": href})
+                    elif isinstance(parent, Link):
+                        href = zip_path.relpath(parent.href, nav_dir_name)
+                        a = etree.SubElement(li, "a", {"href": href})
                     else:
                         a = etree.SubElement(li, "span")
-                    a.text = item[0].title
-
-                    _create_section(li, item[1])
+                    a.text = parent.title
+                    if children:
+                        _create_section(li, children)
 
                 elif isinstance(item, Link):
                     li = etree.SubElement(ol, "li")
-                    a = etree.SubElement(li, "a", {"href": zip_path.relpath(item.href, nav_dir_name)})
+                    href = zip_path.relpath(item.href, nav_dir_name)
+                    a = etree.SubElement(li, "a", {"href": href})
                     a.text = item.title
                 elif isinstance(item, EpubHtml):
                     li = etree.SubElement(ol, "li")
-                    a = etree.SubElement(li, "a", {"href": zip_path.relpath(item.file_name, nav_dir_name)})
+                    href = zip_path.relpath(item.file_name, nav_dir_name)
+                    a = etree.SubElement(li, "a", {"href": href})
                     a.text = item.title
 
         _create_section(nav, self.book.toc)
@@ -425,7 +456,7 @@ class EpubWriter:
         # PAGE-LIST
         if self.options.get("epub3_pages"):
             inserted_pages = get_pages_for_items(
-                [item for item in self.book.get_items_of_type(ebooklib.ITEM_DOCUMENT) if not isinstance(item, EpubNav)]
+                [item for item in self.book.get_items_of_type(ITEM_DOCUMENT) if not isinstance(item, EpubNav)]
             )
 
             if len(inserted_pages) > 0:
@@ -458,13 +489,11 @@ class EpubWriter:
                     )
                     a_item.text = _title
 
-        tree_str = etree.tostring(nav_xml, pretty_print=True, encoding="utf-8", xml_declaration=True)
-
-        return tree_str
+        return xml_tostring(nav_xml)
 
     def _get_ncx(self) -> bytes:
         # we should be able to setup language for NCX as also
-        ncx = parse_string(self.book.get_template("ncx") or b"")
+        ncx = parse_xml(self.book.get_template("ncx") or b"")
         root = ncx.getroot()
 
         head = etree.SubElement(root, "head")
@@ -486,16 +515,15 @@ class EpubWriter:
             nav_point.set("playOrder", str(self._play_order["start_from"]))
             self._play_order["start_from"] += 1
 
-        def _create_section(itm, items, uid):
+        def _create_section(node, items, uid):
             for item in items:
                 if isinstance(item, tuple | list):
                     section, subsection = item[0], item[1]
-
-                    np = etree.SubElement(
-                        itm,
-                        "navPoint",
-                        {"id": (section.get_id() or "") if isinstance(section, EpubHtml) else f"sep_{uid}"},
-                    )
+                    if isinstance(section, EpubHtml):
+                        _id = section.get_id() or ""
+                    else:
+                        _id = f"sep_{uid}"
+                    np = etree.SubElement(node,"navPoint", {"id": _id})
 
                     if self._play_order["enabled"]:
                         _add_play_order(np)
@@ -517,14 +545,14 @@ class EpubWriter:
 
                     uid = _create_section(np, subsection, uid + 1)
                 elif isinstance(item, Link):
-                    _parent = itm
+                    _parent = node
                     _content = _parent.find("content")
 
                     if _content is not None:
                         if _content.get("src") == "":
                             _content.set("src", item.href)
 
-                    np = etree.SubElement(itm, "navPoint", {"id": item.uid or ""})
+                    np = etree.SubElement(node, "navPoint", {"id": item.uid or ""})
 
                     if self._play_order["enabled"]:
                         _add_play_order(np)
@@ -535,14 +563,14 @@ class EpubWriter:
 
                     _nc = etree.SubElement(np, "content", {"src": item.href})
                 elif isinstance(item, EpubHtml):
-                    _parent = itm
+                    _parent = node
                     _content = _parent.find("content")
 
                     if _content is not None:
                         if _content.get("src") == "":
                             _content.set("src", item.file_name)
 
-                    np = etree.SubElement(itm, "navPoint", {"id": item.get_id() or ""})
+                    np = etree.SubElement(node, "navPoint", {"id": item.get_id() or ""})
 
                     if self._play_order["enabled"]:
                         _add_play_order(np)
@@ -557,33 +585,33 @@ class EpubWriter:
 
         _create_section(nav_map, self.book.toc, 0)
 
-        tree_str = etree.tostring(root, pretty_print=True, encoding="utf-8", xml_declaration=True)
-
-        return tree_str
+        return xml_tostring(ncx)
 
     def _write_items(self) -> None:
         for item in self.book.get_items():
             if isinstance(item, EpubNcx):
-                self.out.writestr(self.zipinfo(f"{self.book.FOLDER_NAME}/{item.file_name}"), self._get_ncx())
+                self.out.writestr(self.zipinfo(f"{self.book.FOLDER_NAME}/{item.file_name}"),
+                                  self._get_ncx())
             elif isinstance(item, EpubNav):
-                self.out.writestr(self.zipinfo(f"{self.book.FOLDER_NAME}/{item.file_name}"), self._get_nav(item))
+                self.out.writestr(self.zipinfo(f"{self.book.FOLDER_NAME}/{item.file_name}"),
+                                  self._get_nav(item))
             elif item.manifest:
-                self.out.writestr(self.zipinfo(f"{self.book.FOLDER_NAME}/{item.file_name}"), item.get_content())
+                self.out.writestr(self.zipinfo(f"{self.book.FOLDER_NAME}/{item.file_name}"),
+                                  item.get_content())
             else:
-                self.out.writestr(self.zipinfo(item.file_name), item.get_content())
+                self.out.writestr(self.zipinfo(item.file_name),
+                                  item.get_content())
 
     def write(self) -> None:
         # zipfile stubs expect IO[bytes], but any object with write/seek/tell works
-        target = cast("str | os.PathLike[str] | IO[bytes]", self.file_name)
-        self.out = zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=self.options["compresslevel"])
-        try:
-            self.out.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
-
+        with ZipFile(self.file_name,
+                     "w",
+                     ZIP_DEFLATED,
+                     compresslevel=self.options["compresslevel"]) as self.out:  # pylint: disable=W0201
+            self.out.writestr("mimetype", "application/epub+zip", compress_type=ZIP_STORED)
             self._write_container()
             self._write_opf()
             self._write_items()
-        finally:
-            self.out.close()
 
 
 def write_epub(name: EpubTarget, book: EpubBook, options: dict[str, Any] | None = None) -> bool:
@@ -603,7 +631,7 @@ def write_epub(name: EpubTarget, book: EpubBook, options: dict[str, Any] | None 
 
     try:
         epub.write()
-    except Exception as e:
+    except Exception as e:  # pylint: disable=W0718
         if options and options.get("raise_exceptions"):
             raise e
         else:

@@ -1,3 +1,4 @@
+# pylint: disable=missing-module-docstring, missing-class-docstring, unused-argument
 # This file is part of EbookLib.
 # Copyright (c) 2013 Aleksandar Erkalovic <aerkalov@gmail.com>
 #

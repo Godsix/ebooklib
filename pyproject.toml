@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,8 @@ name = "EbookLib"
 version = "0.21"
 description = "Ebook library which can handle EPUB2/EPUB3 format"
 readme = { file = "README.md", content-type = "text/markdown" }
-license = { text = "GNU Affero General Public License v3 or later (AGPLv3+)" }
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE.txt"]
 authors = [
     { name = "Aleksandar Erkalovic", email = "aerkalov@gmail.com" },
 ]
@@ -19,7 +20,6 @@ dependencies = [
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -37,15 +37,20 @@ Source = "https://github.com/aerkalov/ebooklib"
 "Bug Tracker" = "https://github.com/aerkalov/ebooklib/issues"
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov", "sphinx", "ruff", "ty", "lxml-stubs", "types-Pygments"]
+dev = ["pytest", "pytest-cov", "sphinx", "ruff", "ty", "types-lxml", "types-Pygments"]
 test = ["pytest", "pytest-cov"]
 docs = ["sphinx"]
 
 [tool.setuptools]
-packages = ["ebooklib", "ebooklib.plugins"]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ebooklib", "ebooklib.*"]
+namespaces = false
 
 [tool.setuptools.package-data]
-ebooklib = ["py.typed"]
+ebooklib = ["py.typed", "templates/*.xml", "templates/*/*.xml"]
 
 [tool.ty.environment]
 # Type check against the oldest supported Python version.

@@ -25,8 +25,8 @@ still importable from ``ebooklib.epub`` and will remain so until a future
 major release.
 """
 
-from ebooklib.book import EpubBook
-from ebooklib.consts import (
+from .book import EpubBook
+from .consts import (
     CHAPTER_XML,
     CONTAINER_PATH,
     CONTAINER_XML,
@@ -37,10 +37,11 @@ from ebooklib.consts import (
     NCX_XML,
     VERSION,
 )
-from ebooklib.exceptions import EpubException
-from ebooklib.items import (
+from .exceptions import EpubException
+from .items import (
     EpubCover,
     EpubCoverHtml,
+    EpubFont,
     EpubHtml,
     EpubImage,
     EpubItem,
@@ -48,9 +49,9 @@ from ebooklib.items import (
     EpubNcx,
     EpubSMIL,
 )
-from ebooklib.reader import EpubReader, read_epub
-from ebooklib.toc import Link, Section
-from ebooklib.writer import EpubWriter, write_epub
+from .reader import EpubReader, read_epub
+from .toc import Link, Section
+from .writer import EpubWriter, write_epub
 
 __all__ = [
     # consts
@@ -76,6 +77,7 @@ __all__ = [
     "EpubCoverHtml",
     "EpubNav",
     "EpubImage",
+    "EpubFont",
     "EpubSMIL",
     # book
     "EpubBook",

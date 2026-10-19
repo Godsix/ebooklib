@@ -16,32 +16,36 @@
 
 # Version of ebook library
 
-VERSION: tuple[int, int, int] = (0, 21, 0)
+from .consts import (
+    EXTENSIONS,
+    ITEM_AUDIO,
+    ITEM_COVER,
+    ITEM_DOCUMENT,
+    ITEM_FONT,
+    ITEM_IMAGE,
+    ITEM_NAVIGATION,
+    ITEM_SCRIPT,
+    ITEM_SMIL,
+    ITEM_STYLE,
+    ITEM_UNKNOWN,
+    ITEM_VECTOR,
+    ITEM_VIDEO,
+    VERSION,
+)
 
-# LIST OF POSSIBLE ITEMS
-ITEM_UNKNOWN = 0
-ITEM_IMAGE = 1
-ITEM_STYLE = 2
-ITEM_SCRIPT = 3
-ITEM_NAVIGATION = 4
-ITEM_VECTOR = 5
-ITEM_FONT = 6
-ITEM_VIDEO = 7
-ITEM_AUDIO = 8
-ITEM_DOCUMENT = 9
-ITEM_COVER = 10
-ITEM_SMIL = 11
-
-# EXTENSION MAPPER
-EXTENSIONS: dict[int, list[str]] = {
-    ITEM_IMAGE: [".jpg", ".jpeg", ".gif", ".tiff", ".tif", ".png"],
-    ITEM_STYLE: [".css"],
-    ITEM_VECTOR: [".svg"],
-    ITEM_FONT: [".otf", ".woff", ".ttf"],
-    ITEM_SCRIPT: [".js"],
-    ITEM_NAVIGATION: [".ncx"],
-    ITEM_VIDEO: [".mov", ".mp4", ".avi", ".webm"],
-    ITEM_AUDIO: [".mp3", ".ogg"],
-    ITEM_COVER: [".jpg", ".jpeg", ".png"],
-    ITEM_SMIL: [".smil"],
-}
+__all__ = [
+    'VERSION',
+    'EXTENSIONS',
+    'ITEM_UNKNOWN',
+    'ITEM_IMAGE',
+    'ITEM_STYLE',
+    'ITEM_SCRIPT',
+    'ITEM_NAVIGATION',
+    'ITEM_VECTOR',
+    'ITEM_FONT',
+    'ITEM_VIDEO',
+    'ITEM_AUDIO',
+    'ITEM_DOCUMENT',
+    'ITEM_COVER',
+    'ITEM_SMIL'
+]

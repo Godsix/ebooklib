@@ -13,14 +13,79 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with EbookLib.  If not, see <http://www.gnu.org/licenses/>.
-
-import io
+# pylint: disable=I1101
+import re
+import posixpath
 import mimetypes
-import os
+from io import BytesIO
+from os import PathLike
+from pathlib import Path
 
 from lxml import etree
+from lxml.etree import QName, XMLParser  # pylint: disable=E0611
+from lxml.html import HTMLParser, XHTMLParser, document_fromstring, xhtml_to_html
 
-mimetype_initialised = False
+from .consts import NAMESPACES
+from .pytype import ElementTree, HtmlElement, XmlElement
+
+
+LXML_DECLARATION = re.compile(b"<\\?xml[^>]+?\\?>")
+PATTERN_NEWLINE = re.compile('[\r\n]+')
+
+
+# Parsers are stateful and not thread-safe, so create a fresh one per parse
+# instead of sharing module-level instances between threads.
+def _xml_parser() -> XMLParser:
+    return XMLParser(recover=True, resolve_entities=False)
+
+
+def _html_parser() -> HTMLParser:
+    return HTMLParser(encoding="utf-8")
+
+
+def _xhtml_parser() -> XHTMLParser:
+    return XHTMLParser(encoding="utf-8")
+
+
+mimetypes.add_type("application/xhtml+xml", ".xhtml")
+mimetypes.add_type("font/ttf", ".ttf")
+mimetypes.add_type("font/otf", ".otf")
+mimetypes.add_type("font/collection", ".ttc")
+mimetypes.add_type("font/woff", ".woff")
+mimetypes.add_type("font/woff2", ".woff2")
+
+
+def _xml_decl_sub(m: re.Match[bytes]):
+    return m[0].replace(b"'", b'"')
+
+
+def format_xml_declaration(content: bytes) -> bytes:
+    '''Fix XML declaration.'''
+    return LXML_DECLARATION.sub(_xml_decl_sub, content, 1)
+
+
+def get_qname(text: str | QName | XmlElement | None,
+              tag: str | None = None,
+              namespaces: dict[str, str] | None = None) -> str:
+    '''Resolve tag name or attr name to QName.
+
+    ``text`` can be a prefix (``"opf"``), a prefixed name (``"opf:item"``),
+    an existing namespace URI (``"http://..."``), a Clark name
+    (``"{uri}local"``), or an element used as the namespace source.
+    '''
+    if isinstance(text, str):
+        if not text:
+            return str(QName(None, tag))
+        if not namespaces:
+            namespaces = NAMESPACES
+        if (pos := text.find(":")) >= 0:
+            prefix = text[:pos]
+            localname = text[pos + 1:]
+            if ns := namespaces.get(prefix.upper()):
+                return str(QName(QName(ns, localname), tag))
+        elif namespace := namespaces.get(text.upper()):
+            return str(QName(namespace, tag))
+    return str(QName(text, tag))
 
 
 def debug(obj: object) -> None:
@@ -30,47 +95,107 @@ def debug(obj: object) -> None:
     pp.pprint(obj)
 
 
-def parse_string(s: str | bytes) -> etree._ElementTree:
-    parser = etree.XMLParser(recover=True, resolve_entities=False)
-    if isinstance(s, str):
-        tree = etree.parse(io.BytesIO(s.encode("utf-8")), parser=parser)
-    else:
-        tree = etree.parse(io.BytesIO(s), parser=parser)
+def format_uri(s: str) -> str:
+    '''Fix URI'''
+    return s.replace('\\', '/')
 
+
+def join_path(*paths: str) -> str:
+    '''Join paths and fix slashes.'''
+    ipath = (format_uri(x) for x in paths)
+    return posixpath.normpath(posixpath.join(*ipath))
+
+
+def format_newline(node: ElementTree | XmlElement) -> None:
+    '''Fix newlines in text and tail.'''
+    for child in node.iter():
+        if child.tail:
+            child.tail = PATTERN_NEWLINE.sub('\n', child.tail)
+        if child.text:
+            child.text = PATTERN_NEWLINE.sub('\n', child.text)
+
+
+def _etree_parse(value: PathLike | str | bytes, parser=None) -> ElementTree:
+    '''Parse XML file.'''
+    if isinstance(value, PathLike):
+        obj = value
+    elif isinstance(value, bytes):
+        obj = BytesIO(value)
+    elif isinstance(value, str):
+        obj = BytesIO(value.encode("utf-8"))
+    else:
+        raise TypeError(f"Invalid type for path: {type(value).__name__}")
+    tree = etree.parse(obj, parser=parser)
     return tree
 
 
-def parse_html_string(s: str | bytes):
-    from lxml import html
+def parse_xml(value: PathLike | str | bytes) -> ElementTree:
+    '''Parse XML file.'''
+    return _etree_parse(value, parser=_xml_parser())
 
-    utf8_parser = html.HTMLParser(encoding="utf-8")
 
-    html_tree = html.document_fromstring(s, parser=utf8_parser)
+def parse_xhtml(value: PathLike | str | bytes) -> ElementTree:
+    '''Parse XHTML file and convert it to HTML.'''
+    tree = _etree_parse(value, parser=_xhtml_parser())
+    xhtml_to_html(tree)
+    return tree
 
-    return html_tree
+
+def parse_html(value: PathLike | str | bytes) -> HtmlElement:
+    '''Parse HTML file or content.'''
+    parser = _html_parser()
+    if isinstance(value, PathLike):
+        tree = etree.parse(value, parser=parser)
+        root = tree.getroot()
+    else:
+        root = document_fromstring(value, parser=parser)
+    return root
+
+
+# Backwards-compatible aliases for the pre-0.22 public helpers.
+parse_string = parse_xml
+parse_html_string = parse_html
+
+
+def xml_tostring(node, **kwargs) -> bytes:
+    '''Convert XML node to string.'''
+    kwargs.setdefault('pretty_print', True)
+    kwargs.setdefault('encoding', 'UTF-8')
+    kwargs.setdefault('xml_declaration', True)
+    text = etree.tostring(node, **kwargs)
+    return format_xml_declaration(text)
+
+
+def xhtml_tostring(node, **kwargs) -> bytes:
+    '''Convert XHTML node to string.'''
+    kwargs.setdefault('pretty_print', True)
+    kwargs.setdefault('encoding', 'UTF-8')
+    kwargs.setdefault('xml_declaration', True)
+    if hasattr(node, 'docinfo') and node.docinfo.doctype:
+        kwargs.setdefault('doctype', node.docinfo.doctype)
+    else:
+        kwargs.setdefault('doctype', '<!DOCTYPE html>')
+    text = etree.tostring(node, **kwargs)
+    return format_xml_declaration(text)
 
 
 def guess_type(extenstion: str) -> tuple[str | None, str | None]:
-    global mimetype_initialised
-
-    if not mimetype_initialised:
-        mimetypes.init()
-        mimetypes.add_type("application/xhtml+xml", ".xhtml")
-        mimetype_initialised = True
-
+    '''Guess MIME type for file extension.'''
     return mimetypes.guess_type(extenstion)
 
 
-def create_pagebreak(pageref: str, label: str | None = None, html: bool = True) -> etree._Element | str:
-    from ebooklib.consts import NAMESPACES
-
-    pageref_attributes = {
-        f"{{{NAMESPACES['EPUB']}}}type": "pagebreak",
+def create_pagebreak(pageref: str,
+                     label: str | None = None,
+                     html: bool = True) -> XmlElement | str:
+    """Create a pagebreak element."""
+    ns = NAMESPACES["EPUB"]
+    attrib = {
+        QName(ns, "type"): "pagebreak",
         "title": pageref,
         "id": pageref,
     }
 
-    pageref_elem = etree.Element("span", pageref_attributes, nsmap={"epub": NAMESPACES["EPUB"]})
+    pageref_elem = etree.Element("span", attrib=attrib, nsmap={"epub": ns})
 
     if label:
         pageref_elem.text = label
@@ -93,7 +218,7 @@ def get_headers(elem) -> str | None:
 
 
 def get_pages(item) -> list[tuple[str, str, str]]:
-    body = parse_html_string(item.get_body_content())
+    body = parse_html(item.get_body_content())
     pages = []
 
     for elem in body.iter():
@@ -121,33 +246,43 @@ def get_pages_for_items(items) -> list[tuple[str, str, str]]:
     return [item for pages in pages_from_docs for item in pages]
 
 
+# pylint: disable=unnecessary-pass
 class Directory:
     """Reads files from an unpacked EPUB directory, using the same interface as ZipFile."""
 
-    def __init__(self, directory_path: str | os.PathLike) -> None:
-        self.directory_path = directory_path
+    def __init__(self, directory: str | PathLike) -> None:
+        self.directory: Path = Path(directory).resolve()
 
-    def read(self, subname: str) -> bytes:
-        """Read the file ``subname`` relative to the EPUB directory and return its bytes.
+    def _path(self, name: str) -> Path:
+        path = (self.directory / name).resolve()
+        if not path.is_relative_to(self.directory):
+            e = f"Invalid path, escapes the source directory: {name!r}"
+            raise OSError(e)
+        return path
 
-        ``subname`` typically comes from OPF manifest ``href`` attributes, which are
+    def read(self, name: str) -> bytes:
+        """Read the file ``name`` relative to the EPUB directory and return its bytes.
+
+        ``name`` typically comes from OPF manifest ``href`` attributes, which are
         attacker-controlled and URL-decoded, so the resolved path must stay inside the
         EPUB directory.
 
-        :param subname: Path of the file, relative to the EPUB directory.
+        :param name: Path of the file, relative to the EPUB directory.
         :returns: Raw content of the file.
-        :raises OSError: If ``subname`` escapes the EPUB directory (path traversal,
+        :raises OSError: If ``name`` escapes the EPUB directory (path traversal,
             e.g. ``"../../secret"``), or if the file cannot be read.
         """
         # Guard against path traversal (e.g. "../../secret") escaping the EPUB directory.
-        base_path = os.path.realpath(self.directory_path)
-        full_path = os.path.realpath(os.path.join(base_path, subname))
+        return self._path(name).read_bytes()
 
-        if os.path.commonpath([base_path, full_path]) != base_path:
-            raise OSError(f"Invalid path, escapes the source directory: {subname!r}")
-
-        with open(full_path, "rb") as fp:
-            return fp.read()
+    def open(self, name: str, mode="r"):
+        '''
+        Open the file ``name`` relative to the EPUB directory and return a file-like object.
+        '''
+        return self._path(name).open(mode)
 
     def close(self) -> None:
+        """
+        No-op: Directory is always open.
+        """
         pass

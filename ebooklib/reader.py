@@ -19,18 +19,18 @@
 import os
 import posixpath as zip_path
 import warnings
-import zipfile
 from typing import Any, cast
 from urllib.parse import unquote
+from zipfile import ZIP_DEFLATED, BadZipfile, LargeZipFile, ZipFile
 
 from lxml import etree
 
-from ebooklib.book import EpubBook
-from ebooklib.consts import IMAGE_MEDIA_TYPES, NAMESPACES
-from ebooklib.exceptions import EpubException
-from ebooklib.items import EpubCover, EpubCoverHtml, EpubHtml, EpubImage, EpubItem, EpubNav, EpubNcx, EpubSMIL
-from ebooklib.toc import Link, Section
-from ebooklib.utils import Directory, parse_html_string, parse_string
+from .book import EpubBook
+from .consts import CONTAINER_PATH, FONT_MEDIA_TYPES, IMAGE_MEDIA_TYPES, NAMESPACES
+from .exceptions import EpubException
+from .items import EpubCover, EpubCoverHtml, EpubFont, EpubHtml, EpubImage, EpubItem, EpubNav, EpubNcx, EpubSMIL
+from .toc import Link, Section
+from .utils import Directory, get_qname, parse_html, parse_xml
 
 
 class EpubReader:
@@ -39,7 +39,7 @@ class EpubReader:
     def __init__(self, epub_file_name, options: dict[str, Any] | None = None) -> None:
         self.file_name = epub_file_name
         self.book = EpubBook()
-        self.zf: zipfile.ZipFile | Directory | None = None
+        self.zf: ZipFile | Directory | None = None
 
         self.opf_file = ""
         self.opf_dir = ""
@@ -80,8 +80,8 @@ class EpubReader:
         return self.zf.read(name)
 
     def _load_container(self) -> None:
-        meta_inf = self.read_file("META-INF/container.xml")
-        tree = parse_string(meta_inf)
+        meta_inf = self.read_file(CONTAINER_PATH)
+        tree = parse_xml(meta_inf)
 
         for root_file in tree.findall(
             ".//xmlns:rootfile[@media-type]", namespaces={"xmlns": NAMESPACES["CONTAINERNS"]}
@@ -103,7 +103,7 @@ class EpubReader:
 
         # get xml:lang
         # get metadata
-        metadata = self.container.find(f"{{{NAMESPACES['OPF']}}}metadata")
+        metadata = self.container.find(get_qname('opf', 'metadata'))
         if metadata is None:
             raise EpubException(-1, "Can not find metadata element")
 
@@ -155,12 +155,13 @@ class EpubReader:
                 self.book.uid = value
 
     def _load_manifest(self) -> None:
-        manifest = self.container.find(f"{{{NAMESPACES['OPF']}}}manifest")
+        manifest = self.container.find(get_qname('opf', 'manifest'))
         if manifest is None:
             raise EpubException(-1, "Can not find manifest element")
 
+        opf_item = get_qname('opf', 'item')
         for r in manifest:
-            if r is not None and r.tag != f"{{{NAMESPACES['OPF']}}}item":
+            if r is not None and r.tag != opf_item:
                 continue
 
             uid = r.get("id")
@@ -231,21 +232,21 @@ class EpubReader:
             self.book.add_item(ei)
 
     def _parse_ncx(self, data: bytes) -> None:
-        tree = parse_string(data)
+        tree = parse_xml(data)
         tree_root = tree.getroot()
 
-        nav_map = tree_root.find(f"{{{NAMESPACES['DAISY']}}}navMap")
+        nav_map = tree_root.find(get_qname("daisy", "navMap"))
 
         def _get_children(elems, n, nid):
             label, content = "", ""
             children = []
 
             for a in elems:
-                if a.tag == f"{{{NAMESPACES['DAISY']}}}navLabel":
+                if a.tag == get_qname("daisy", "navLabel"):
                     label = a[0].text
-                if a.tag == f"{{{NAMESPACES['DAISY']}}}content":
+                if a.tag == get_qname("daisy", "content"):
                     content = a.get("src", "")
-                if a.tag == f"{{{NAMESPACES['DAISY']}}}navPoint":
+                if a.tag == get_qname("daisy", "navPoint"):
                     children.append(_get_children(a, n + 1, a.get("id", "")))
 
             if len(children) > 0:
@@ -259,7 +260,7 @@ class EpubReader:
         self.book.toc = _get_children(nav_map, 0, "")
 
     def _parse_nav(self, data: str | bytes, base_path: str, navtype: str = "toc") -> None:
-        html_node = parse_html_string(data)
+        html_node = parse_html(data)
         if navtype == "toc":
             # parsing the table of contents
             nav_node = cast("list[etree._Element]", html_node.xpath("//nav[@*='toc']"))[0]
@@ -316,7 +317,7 @@ class EpubReader:
                     htmlfiles[filename].pages.append(page)
 
     def _load_spine(self) -> None:
-        spine = self.container.find(f"{{{NAMESPACES['OPF']}}}spine")
+        spine = self.container.find(get_qname('opf', 'spine'))
         if spine is None:
             raise EpubException(-1, "Can not find spine element")
 
@@ -342,7 +343,7 @@ class EpubReader:
                 self._parse_ncx(ncxFile)
 
     def _load_guide(self) -> None:
-        guide = self.container.find(f"{{{NAMESPACES['OPF']}}}guide")
+        guide = self.container.find(get_qname('opf', 'guide'))
         if guide is not None:
             self.book.guide = [{"href": t.get("href"), "title": t.get("title"), "type": t.get("type")} for t in guide]
 
@@ -352,7 +353,7 @@ class EpubReader:
         except KeyError:
             raise EpubException(-1, "Can not find container file") from None
 
-        self.container = parse_string(s)
+        self.container = parse_xml(s)
 
         self._load_metadata()
         self._load_manifest()
@@ -380,10 +381,10 @@ class EpubReader:
 
         if self.zf is None:
             try:
-                self.zf = zipfile.ZipFile(file_name, "r", compression=zipfile.ZIP_DEFLATED, allowZip64=True)
-            except zipfile.BadZipfile:
+                self.zf = ZipFile(file_name, "r", compression=ZIP_DEFLATED, allowZip64=True)
+            except BadZipfile:
                 raise EpubException(0, "Bad Zip file") from None
-            except zipfile.LargeZipFile:
+            except LargeZipFile:
                 raise EpubException(1, "Large Zip file") from None
 
         # 1st check metadata

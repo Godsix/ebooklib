@@ -1,3 +1,4 @@
+# pylint: disable=missing-module-docstring, missing-class-docstring, missing-function-docstring, c-extension-no-member
 # This file is part of EbookLib.
 # Copyright (c) 2013 Aleksandar Erkalovic <aerkalov@gmail.com>
 #
@@ -16,7 +17,7 @@
 
 import subprocess
 
-from ebooklib.plugins.base import BasePlugin
+from .base import BasePlugin
 
 # Recommend usage of
 # - https://github.com/w3c/tidy-html5

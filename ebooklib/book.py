@@ -20,10 +20,10 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Iterator
 from typing import Any
-
-from ebooklib.consts import CHAPTER_XML, COVER_XML, NAMESPACES, NAV_XML, NCX_XML, VERSION
-from ebooklib.items import EpubCover, EpubCoverHtml, EpubHtml, EpubImage, EpubItem
-from ebooklib.utils import guess_type
+from .consts import CHAPTER_XML, COVER_XML, NAMESPACES, NAV_XML, NCX_XML
+from .items import EpubCover, EpubCoverHtml, EpubHtml, EpubImage, EpubItem
+from .pytype import Prefix
+from .utils import guess_type
 
 
 class EpubBook:
@@ -68,19 +68,33 @@ class EpubBook:
             "cover": COVER_XML,
         }
 
-        self.add_metadata(
-            "OPF",
-            "generator",
-            "",
-            {"name": "generator", "content": "Ebook-lib {}".format(".".join([str(s) for s in VERSION]))},
-        )
-
         # default to using a randomly-unique identifier if one is not specified manually
         self.set_identifier(str(uuid.uuid4()))
 
         # custom prefixes and namespaces to be set to the content.opf doc
-        self.prefixes: list[str] = []
+        self.prefixes: Prefix = Prefix()
         self.namespaces: dict[str, str] = {}
+
+    @property
+    def prefixes(self) -> Prefix:
+        """
+        :Returns:
+          - prefixes: Custom prefixes and namespaces to be set to the content.opf doc
+        """
+        return self._prefixes
+
+    @prefixes.setter
+    def prefixes(self, value: Prefix | list) -> None:
+        """
+        :Args:
+          - value: Custom prefixes and namespaces to be set to the content.opf doc
+        """
+        if isinstance(value, list):
+            _prefixes = Prefix()
+            _prefixes.extend(value)
+            self._prefixes = _prefixes
+        else:
+            self._prefixes = value
 
     def set_identifier(self, uid: str) -> None:
         """
@@ -170,36 +184,23 @@ class EpubBook:
 
     def add_metadata(self, namespace: str | None, name: str, value: str, others: dict | None = None) -> None:
         """Add metadata"""
-
-        if namespace in NAMESPACES:
-            namespace = NAMESPACES[namespace]
-
-        if namespace not in self.metadata:
-            self.metadata[namespace] = {}
-
-        if name not in self.metadata[namespace]:
-            self.metadata[namespace][name] = []
-
-        self.metadata[namespace][name].append((value, others))
+        ns = NAMESPACES.get(namespace, namespace)
+        ns_map = self.metadata.setdefault(ns, {})
+        ns_names = ns_map.setdefault(name, [])
+        ns_names.append((value, others))
 
     def get_metadata(self, namespace: str | None, name: str) -> list:
         """Retrieve metadata"""
 
-        if namespace in NAMESPACES:
-            namespace = NAMESPACES[namespace]
-
-        return self.metadata[namespace].get(name, [])
+        ns = NAMESPACES.get(namespace, namespace)
+        return self.metadata[ns].get(name, [])
 
     def set_unique_metadata(self, namespace: str | None, name: str, value: str, others: dict | None = None) -> None:
         """Add metadata if metadata with this identifier does not already exist, otherwise update existing metadata."""
 
-        if namespace in NAMESPACES:
-            namespace = NAMESPACES[namespace]
-
-        if namespace in self.metadata and name in self.metadata[namespace]:
-            self.metadata[namespace][name] = [(value, others)]
-        else:
-            self.add_metadata(namespace, name, value, others)
+        ns = NAMESPACES.get(namespace, namespace)
+        ns_map = self.metadata.setdefault(ns, {})
+        ns_map[name] = [(value, others)]
 
     def add_item(self, item: EpubItem) -> EpubItem:
         """
@@ -346,4 +347,4 @@ class EpubBook:
           - uri: URI for the namespace
         """
 
-        self.prefixes.append(f"{name}: {uri}")
+        self.prefixes[name] = uri
