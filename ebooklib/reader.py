@@ -29,9 +29,11 @@ from .book import EpubBook
 from .consts import CONTAINER_PATH, NAMESPACES
 from .exceptions import EpubException
 from .items import EpubHtml, EpubNav
-from .opf import OPF3
+from .ocf import OCFContainer
+from .opf import OPF
+from .pytype import XmlElement
 from .toc import Link, Section
-from .utils import Directory, join_path, parse_html, parse_xml
+from .utils import Directory, join_path, parse_xhtml, parse_xml
 
 
 class EpubReader:
@@ -42,7 +44,7 @@ class EpubReader:
         self.file_name = epub_file_name
         self.book = EpubBook()
         self.io: ZipFile | Directory | None = None
-        self.opf: OPF3 | None = None
+        self.opf: OPF | None = None
 
         self.opf_path = ""
         self.opf_dir = ""
@@ -84,14 +86,11 @@ class EpubReader:
         return self.io.read(join_path(*name))
 
     def _load_container(self) -> None:
-        meta_inf = self._read(CONTAINER_PATH)
-        tree = parse_xml(meta_inf)
-        tag = QName(NAMESPACES["CONTAINERNS"], "rootfile")
-        media_type = "application/oebps-package+xml"
-        for rootfile in tree.findall(f".//{tag}[@media-type='{media_type}']"):
-            self.opf_path = rootfile.get("full-path") or ""
-            self.opf_dir = zip_path.dirname(self.opf_path)
-        self.book.package_dir = self.opf_dir
+        content = self._read(CONTAINER_PATH)
+        self.opf_path = OCFContainer.get_full_path(content)
+        opf_dir, opf_name = zip_path.split(self.opf_path)
+        self.book.opf.file_name = opf_name
+        self.book.package_dir = self.opf_dir = opf_dir
 
     def _parse_ncx(self, data: bytes) -> None:
         tree = parse_xml(data)
@@ -125,61 +124,55 @@ class EpubReader:
         self.book.toc = _get_children(nav_map, 0, "")
 
     def _parse_nav(self, data: str | bytes, base_path: str, navtype: str = "toc") -> None:
-        html_node = parse_html(data)
-        if navtype == "toc":
-            # parsing the table of contents
-            nav_node = html_node.xpath("//nav[@*='toc']")[0]
-        else:
-            # parsing the list of pages
-            _page_list = html_node.xpath("//nav[@*='page-list']")
-            if len(_page_list) == 0:
-                return
-            nav_node = _page_list[0]
+        tree = parse_xhtml(data)
+        nav_tag = QName(NAMESPACES["XHTML"], "nav")
+        epub_type = QName(NAMESPACES["EPUB"], "type")
+        nav_type = "toc" if navtype == "toc" else "page-list"
+        nav = tree.find(f".//{nav_tag}[@{epub_type}='{nav_type}']")
+        if nav is None:
+            return
 
-        def parse_list(list_node):
+        ol_tag = QName(NAMESPACES["XHTML"], "ol")
+        li_tag = QName(NAMESPACES["XHTML"], "li")
+        a_tag = QName(NAMESPACES["XHTML"], "a")
+
+        def parse_list(element: XmlElement):
             items = []
 
-            for item_node in list_node.findall("li"):
-                sublist_node = item_node.find("ol")
-                link_node = item_node.find("a")
+            for child in element.findall(li_tag):
+                sub_element = child.find(ol_tag)
+                href = ""
+                if ((a_node := child.find(a_tag)) is not None
+                        and (href := a_node.get("href"))):
+                    href = join_path(base_path, href)
 
-                if sublist_node is not None:
-                    title = item_node[0].text_content()
-                    children = parse_list(sublist_node)
-
-                    if link_node is not None and link_node.get("href"):
-                        href = zip_path.normpath(zip_path.join(base_path, link_node.get("href")))
-                        items.append((Section(title, href=href), children))
-                    else:
-                        items.append((Section(title), children))
-                elif link_node is not None and link_node.get("href"):
-                    title = link_node.text_content()
-                    href = zip_path.normpath(zip_path.join(base_path, link_node.get("href")))
-
-                    items.append(Link(href, title))
+                if sub_element is not None:
+                    title = child[0].text_content()
+                    children = parse_list(sub_element)
+                    items.append((Section(title, href=href), children))
+                elif href:
+                    title = a_node.text_content()
+                    items.append(Link(href=href, title=title))
 
             return items
 
         if navtype == "toc":
-            self.book.toc = parse_list(nav_node.find("ol"))
-        elif nav_node is not None:
-            # generate the pages list if there is one
-            self.book.pages = parse_list(nav_node.find("ol"))
+            self.book.toc = parse_list(nav.find(ol_tag))
+            return
+        # generate the pages list if there is one
+        self.book.pages = parse_list(nav.find(ol_tag))
 
-            # generate the per-file pages lists
-            # because of the order of parsing the files, this can't be done
-            # when building the EpubHtml objects
-            htmlfiles = {}
-            for htmlfile in self.book.items:
-                if isinstance(htmlfile, EpubHtml):
-                    htmlfiles[htmlfile.file_name] = htmlfile
-            for page in self.book.pages:
-                try:
-                    filename, idref = page.href.split("#")
-                except ValueError:
-                    filename = page.href
-                if filename in htmlfiles:
-                    htmlfiles[filename].pages.append(page)
+        # generate the per-file pages lists
+        # because of the order of parsing the files, this can't be done
+        # when building the EpubHtml objects
+        items = {x.file_name: x for x in self.book.items if isinstance(x, EpubHtml)}
+        for page in self.book.pages:
+            if (pos := page.href.find("#")) < 0:
+                filename = page.href
+            else:
+                filename = page.href[:pos]
+            if filename in items:
+                items[filename].pages.append(page)
 
     def _load_opf_file(self) -> None:
         try:
@@ -187,7 +180,7 @@ class EpubReader:
         except KeyError:
             raise EpubException(-1, "Can not find container file") from None
 
-        self.opf = OPF3(zip_path.basename(self.opf_path))
+        self.opf = OPF(zip_path.basename(self.opf_path))
         self.opf.set_content(s, self.io, self.book, **self.options)
 
         toc = self.opf.spine.get("toc", "")

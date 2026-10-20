@@ -16,17 +16,17 @@
 # along with EbookLib.  If not, see <http://www.gnu.org/licenses/>.
 
 """OPF(Open Packaging Format) file in EPUB book."""
+from __future__ import annotations
 import logging
 from datetime import timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from urllib.parse import unquote
 
 from lxml import etree
 from lxml.etree import QName, SubElement  # pylint: disable=E0611
 
 from .base import FileObject
-from .book import EpubBook
 from .consts import FONT_MEDIA_TYPES, IMAGE_MEDIA_TYPES, NAMESPACES, VERSION
 from .exceptions import EpubException
 from .items import (
@@ -42,6 +42,8 @@ from .items import (
 )
 from .pytype import FileReader, XmlElement
 from .utils import get_qname, join_path, parse_xhtml, parse_xml, xml_tostring
+if TYPE_CHECKING:
+    from .book import EpubBook
 
 _DURATION_UNITS = {
     "ms": Decimal("0.001"),
@@ -81,7 +83,7 @@ def seconds_to_duration(seconds: Decimal) -> str:
 
 
 # pylint: disable=unused-argument
-class OPF3(FileObject):
+class OPF(FileObject):
     """
     OPF(Open Packaging Format) 3.0 file in EPUB book.
     """

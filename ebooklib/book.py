@@ -24,7 +24,16 @@ from typing import Any
 from .consts import CHAPTER_XML, COVER_XML, NAMESPACES, NAV_XML, NCX_XML
 from .items import EpubCover, EpubCoverHtml, EpubHtml, EpubImage, EpubItem
 from .pytype import Prefix
+from .opf import OPF
 from .utils import guess_type
+
+
+def set_optional_attr(obj: Any, name: str, value: str | None):
+    """Set an attribute if value is not None, otherwise remove it."""
+    if value:
+        setattr(obj, name, value)
+    elif hasattr(obj, name):
+        delattr(obj, name)
 
 
 class EpubBook:
@@ -34,17 +43,47 @@ class EpubBook:
     FOLDER_NAME: str = "EPUB"
 
     def __init__(self) -> None:
+        self.reset()
+
+        # we should have options here
+    @property
+    def version(self) -> str:
+        """Returns the EPUB version of this book."""
+        return getattr(self, "_version", self.EPUB_VERSION)
+
+    @version.setter
+    def version(self, value: str | None):
+        """Sets the EPUB version of this book."""
+        set_optional_attr(self, "_version", value)
+
+    @property
+    def identifier_id(self) -> str:
+        """Returns the identifier id of this book."""
+        return getattr(self, "_identifier_id", self.IDENTIFIER_ID)
+
+    @identifier_id.setter
+    def identifier_id(self, value: str | None):
+        """Sets the identifier id of this book."""
+        set_optional_attr(self, "_identifier_id", value)
+
+    @property
+    def package_dir(self) -> str:
+        """Returns the package directory of this book. """
+        return getattr(self, "_package_dir", self.FOLDER_NAME)
+
+    @package_dir.setter
+    def package_dir(self, value: str | None):
+        """Sets the package directory of this book."""
+        set_optional_attr(self, "_package_dir", value)
+
+    def reset(self) -> None:
+        """Initialises all needed variables to default values"""
+        self.opf: OPF = OPF()
         # EPUB version as read from the package document (e.g. "3.0").
         # Set by EpubReader when loading an existing book.
         self.version: str | None = None
         self.identifier_id: str | None = None
         self.package_dir: str | None = None
-        self.reset()
-
-        # we should have options here
-
-    def reset(self) -> None:
-        """Initialises all needed variables to default values"""
 
         self.metadata: dict[str | None, dict[str, list[Any]]] = {}
         self.items: list[EpubItem] = []

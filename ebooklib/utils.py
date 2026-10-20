@@ -23,7 +23,7 @@ from pathlib import Path
 
 from lxml import etree
 from lxml.etree import QName, XMLParser, XMLSyntaxError  # pylint: disable=E0611
-from lxml.html import HTMLParser, XHTMLParser, document_fromstring, html_to_xhtml
+from lxml.html import HTMLParser, XHTMLParser, document_fromstring, html_to_xhtml, xhtml_to_html
 
 from .consts import NAMESPACES
 from .pytype import ElementTree, HtmlElement, XmlElement
@@ -143,6 +143,13 @@ def parse_xhtml(value: PathLike | str | bytes) -> ElementTree:
     return tree
 
 
+def parse_xhtml_to_html(value: PathLike | str | bytes) -> ElementTree:
+    '''Parse HTML file or content.'''
+    tree = parse_xhtml(value)
+    xhtml_to_html(tree)
+    return tree
+
+
 def parse_html(value: PathLike | str | bytes) -> HtmlElement:
     '''Parse HTML file or content.'''
     parser = _html_parser()
@@ -177,6 +184,7 @@ def xhtml_tostring(node, **kwargs) -> bytes:
         kwargs.setdefault('doctype', node.docinfo.doctype)
     else:
         kwargs.setdefault('doctype', '<!DOCTYPE html>')
+    html_to_xhtml(node)
     text = etree.tostring(node, **kwargs)
     return format_xml_declaration(text)
 
@@ -208,43 +216,42 @@ def create_pagebreak(pageref: str,
     return pageref_elem
 
 
-def get_headers(elem) -> str | None:
+def get_headers(element: XmlElement) -> str | None:
+    """Get the text of the first header element in an XHTML document."""
     for n in range(1, 7):
-        headers = elem.xpath(f"./h{n}")
-
-        if len(headers) > 0:
-            text = headers[0].text_content().strip()
-            if len(text) > 0:
+        header = element.find(QName(NAMESPACES["XHTML"], f"h{n}"))
+        if header is not None:
+            text = header.text_content().strip()
+            if text:
                 return text
     return None
 
 
 def get_pages(item) -> list[tuple[str, str, str]]:
-    body = parse_html(item.get_body_content())
+    """Get the pages from an item."""
+    body = parse_xhtml(item.get_body_content())
     pages = []
 
-    for elem in body.iter():
-        if "epub:type" in elem.attrib:
-            if elem.get("id") is not None:
-                _text = None
+    keys = [QName(NAMESPACES["EPUB"], "type"), "epub:type"]
 
-                if elem.text is not None and elem.text.strip() != "":
-                    _text = elem.text.strip()
+    for elem in (x for x in body.iter() if any(k in x.attrib for k in keys)):
+        if (uid := elem.get("id")) is not None:
+            _text = uid
 
-                if _text is None:
-                    _text = elem.get("aria-label")
+            if elem.text is not None and (text := elem.text.strip()):
+                _text = text
+            elif label := elem.get("aria-label"):
+                _text = label
+            elif headers := get_headers(elem):
+                _text = headers
 
-                if _text is None:
-                    _text = get_headers(elem)
-
-                pages.append((item.get_name(), elem.get("id"), _text or elem.get("id")))
-
+            pages.append((item.get_name(), uid, _text))
     return pages
 
 
 def get_pages_for_items(items) -> list[tuple[str, str, str]]:
+    """Get the pages from a list of items."""
     pages_from_docs = [get_pages(item) for item in items]
-
     return [item for pages in pages_from_docs for item in pages]
 
 

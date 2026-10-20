@@ -17,7 +17,7 @@
 
 from lxml import etree, html
 
-from ..utils import parse_html
+from ..utils import parse_xhtml_to_html, xhtml_tostring
 from .base import BasePlugin
 
 
@@ -33,11 +33,11 @@ class SourceHighlighter(BasePlugin):
             from pygments.lexers import CssLexer, PythonLexer
         except ImportError as exc:
             raise ImportError(
-                "SourceHighlighter requires the optional 'pygments' package."
+                f"{type(self).__name__} requires the optional 'pygments' package."
             ) from exc
 
         try:
-            tree = parse_html(chapter.content)
+            tree = parse_xhtml_to_html(chapter.content)
         except Exception:  # pylint: disable=broad-exception-caught
             return
 
@@ -71,4 +71,4 @@ class SourceHighlighter(BasePlugin):
 
         if had_source:
             chapter.add_link(href="style/code.css", rel="stylesheet", type="text/css")
-            chapter.content = etree.tostring(tree, pretty_print=True, encoding="utf-8")
+            chapter.content = xhtml_tostring(tree)

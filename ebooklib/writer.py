@@ -27,18 +27,19 @@ from typing import IO, Any, Protocol, TypeAlias
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
 
 from lxml import etree
+from lxml.etree import QName
 
 from .book import EpubBook
 from .consts import (
     COMPRESSED,
     CONTAINER_PATH,
-    CONTAINER_XML,
     ITEM_DOCUMENT,
+    NAMESPACES
 )
 from .items import EpubHtml, EpubNav, EpubNcx
-from .opf import OPF3
+from .ocf import OCFContainer
 from .toc import Link, Section
-from .utils import get_pages_for_items, get_qname, parse_xml, xml_tostring
+from .utils import get_pages_for_items, get_qname, join_path, parse_xhtml, parse_xml, xhtml_tostring, xml_tostring
 
 logger = logging.getLogger(__name__)
 
@@ -145,83 +146,85 @@ class EpubWriter:
                     if hasattr(plg, "html_before_write"):
                         plg.html_before_write(self.book, item)
 
-    def _write_container(self) -> None:
-        container_xml = CONTAINER_XML % {"folder_name": self.book.FOLDER_NAME}
-        self.out.writestr(self.zipinfo(CONTAINER_PATH), container_xml)
 
-    def _write_opf(self) -> None:
-        opf = OPF3()
-        self.out.writestr(self.zipinfo(f"{self.book.FOLDER_NAME}/content.opf"),
-                          opf.get_content(self.book, **self.options))
 
     def _get_nav(self, item: EpubNav) -> bytes:
         # just a basic navigation for now
-        nav_xml = parse_xml(self.book.get_template("nav") or b"")
-        root = nav_xml.getroot()
+        content = self.book.get_template("nav")
+        if content:
+            tree = parse_xhtml(content)
+            root = tree.getroot()
+        else:
+            xmlns = NAMESPACES["XHTML"]
+            xmlns_epub = NAMESPACES["EPUB"]
+            root = etree.Element(QName(xmlns, "html"),
+                                 nsmap={None: xmlns,
+                                        "epub": xmlns_epub})
+            tree = etree.ElementTree(root)
 
         root.set("lang", self.book.language)
         root.attrib[get_qname("xml", "lang")] = self.book.language
 
         nav_dir_name = os.path.dirname(item.file_name)
 
-        head = etree.SubElement(root, "head")
-        title = etree.SubElement(head, "title")
+        head = etree.SubElement(root, QName(root, "head"))
+        title = etree.SubElement(head, QName(head, "title"))
         title.text = item.title or self.book.title
 
         # for now this just handles css files and ignores others
         for link in item.links:
-            opts = {"href": link.get("href", ""),
-                    "rel": "stylesheet",
-                    "type": "text/css"}
-            _ = etree.SubElement(head, "link", opts)
+            attrib = {"href": link.get("href", ""),
+                      "rel": "stylesheet",
+                      "type": "text/css"}
+            etree.SubElement(head, QName(head, "link"), attrib)
 
-        body = etree.SubElement(root, "body")
+        body = etree.SubElement(root, QName(root, "body"))
         if item.direction:
             body.set("dir", item.direction)
-        epub_type_attr = get_qname("epub", "type")
+        epub_type = get_qname("epub", "type")
         nav = etree.SubElement(
             body,
-            "nav",
+            QName(body, "nav"),
             {
-                epub_type_attr: "toc",
+                epub_type: "toc",
                 "id": "id",
                 "role": "doc-toc",
             },
         )
 
-        content_title = etree.SubElement(nav, "h2")
+        content_title = etree.SubElement(nav, QName(root, "h2"))
         content_title.text = item.title or self.book.title
 
         def _create_section(node, items):
-            ol = etree.SubElement(node, "ol")
+            ol = etree.SubElement(node, QName(node, "ol"))
             for item in items:
                 if isinstance(item, tuple | list):
                     parent, children, *_ = item
-                    li = etree.SubElement(ol, "li")
+                    li = etree.SubElement(ol, QName(ol, "li"))
                     if isinstance(parent, EpubHtml):
                         href = zip_path.relpath(parent.file_name, nav_dir_name)
-                        a = etree.SubElement(li, "a", {"href": href})
+                        a = etree.SubElement(li, QName(li, "a"), {"href": href})
                     elif isinstance(parent, Section) and parent.href != "":
                         href = zip_path.relpath(parent.href, nav_dir_name)
-                        a = etree.SubElement(li, "a", {"href": href})
+                        a = etree.SubElement(li, QName(li, "a"), {"href": href})
                     elif isinstance(parent, Link):
                         href = zip_path.relpath(parent.href, nav_dir_name)
-                        a = etree.SubElement(li, "a", {"href": href})
+                        a = etree.SubElement(li, QName(li, "a"), {"href": href})
                     else:
-                        a = etree.SubElement(li, "span")
+                        a = etree.SubElement(li, QName(li, "span"))
                     a.text = parent.title
                     if children:
                         _create_section(li, children)
 
                 elif isinstance(item, Link):
-                    li = etree.SubElement(ol, "li")
+                    li = etree.SubElement(ol, QName(ol, "li"))
                     href = zip_path.relpath(item.href, nav_dir_name)
-                    a = etree.SubElement(li, "a", {"href": href})
+                    a = etree.SubElement(li, QName(li, "a"), {"href": href})
                     a.text = item.title
                 elif isinstance(item, EpubHtml):
-                    li = etree.SubElement(ol, "li")
+                    li = etree.SubElement(ol, QName(ol, "li"))
                     href = zip_path.relpath(item.file_name, nav_dir_name)
-                    a = etree.SubElement(li, "a", {"href": href})
+                    a = etree.SubElement(li, QName(li, "a"), {"href": href})
                     a.text = item.title
 
         _create_section(nav, self.book.toc)
@@ -233,12 +236,12 @@ class EpubWriter:
             # Epub2 guide types do not map completely to epub3 landmark types.
             guide_to_landscape_map = {"notes": "rearnotes", "text": "bodymatter"}
 
-            guide_nav = etree.SubElement(body, "nav", {epub_type_attr: "landmarks"})
+            guide_nav = etree.SubElement(body, QName(body, "nav"), {epub_type: "landmarks"})
 
-            guide_content_title = etree.SubElement(guide_nav, "h2")
+            guide_content_title = etree.SubElement(guide_nav, QName(guide_nav, "h2"))
             guide_content_title.text = self.options.get("landmark_title", "Guide")
 
-            guild_ol = etree.SubElement(guide_nav, "ol")
+            guild_ol = etree.SubElement(guide_nav, QName(guide_nav, "ol"))
 
             for elem in self.book.guide:
                 chap = elem.get("item")
@@ -253,14 +256,14 @@ class EpubWriter:
                     # a landmark entry without a target can not be represented in the nav document
                     continue
 
-                li_item = etree.SubElement(guild_ol, "li")
+                li_item = etree.SubElement(guild_ol, QName(guild_ol, "li"))
 
                 guide_type = elem.get("type") or ""
                 a_item = etree.SubElement(
                     li_item,
-                    "a",
+                    QName(li_item, "a"),
                     {
-                        epub_type_attr: guide_to_landscape_map.get(guide_type, guide_type),
+                        epub_type: guide_to_landscape_map.get(guide_type, guide_type),
                         "href": zip_path.relpath(_href, nav_dir_name),
                     },
                 )
@@ -272,37 +275,37 @@ class EpubWriter:
                 [item for item in self.book.get_items_of_type(ITEM_DOCUMENT) if not isinstance(item, EpubNav)]
             )
 
-            if len(inserted_pages) > 0:
+            if inserted_pages:
                 pagelist_nav = etree.SubElement(
                     body,
-                    "nav",
+                    QName(body, "nav"),
                     {
-                        epub_type_attr: "page-list",
+                        epub_type: "page-list",
                         "id": "pages",
                         "hidden": "hidden",
                     },
                 )
-                pagelist_content_title = etree.SubElement(pagelist_nav, "h2")
+                pagelist_content_title = etree.SubElement(pagelist_nav, QName(pagelist_nav, "h2"))
                 pagelist_content_title.text = self.options.get("pages_title", "Pages")
 
-                pages_ol = etree.SubElement(pagelist_nav, "ol")
+                pages_ol = etree.SubElement(pagelist_nav, QName(pagelist_nav, "ol"))
 
                 for filename, pageref, label in inserted_pages:
-                    li_item = etree.SubElement(pages_ol, "li")
+                    li_item = etree.SubElement(pages_ol, QName(pages_ol, "li"))
 
                     _href = f"{filename}#{pageref}"
                     _title = label
 
                     a_item = etree.SubElement(
                         li_item,
-                        "a",
+                        QName(body, "a"),
                         {
                             "href": zip_path.relpath(_href, nav_dir_name),
                         },
                     )
                     a_item.text = _title
 
-        return xml_tostring(nav_xml)
+        return xhtml_tostring(tree)
 
     def _get_ncx(self) -> bytes:
         # we should be able to setup language for NCX as also
@@ -400,21 +403,6 @@ class EpubWriter:
 
         return xml_tostring(ncx)
 
-    def _write_items(self) -> None:
-        for item in self.book.get_items():
-            if isinstance(item, EpubNcx):
-                self.out.writestr(self.zipinfo(f"{self.book.FOLDER_NAME}/{item.file_name}"),
-                                  self._get_ncx())
-            elif isinstance(item, EpubNav):
-                self.out.writestr(self.zipinfo(f"{self.book.FOLDER_NAME}/{item.file_name}"),
-                                  self._get_nav(item))
-            elif item.manifest:
-                self.out.writestr(self.zipinfo(f"{self.book.FOLDER_NAME}/{item.file_name}"),
-                                  item.get_content())
-            else:
-                self.out.writestr(self.zipinfo(item.file_name),
-                                  item.get_content())
-
     def write(self) -> None:
         # zipfile stubs expect IO[bytes], but any object with write/seek/tell works
         with ZipFile(self.file_name,
@@ -422,9 +410,23 @@ class EpubWriter:
                      ZIP_DEFLATED,
                      compresslevel=self.options["compresslevel"]) as self.out:  # pylint: disable=W0201
             self.out.writestr("mimetype", "application/epub+zip", compress_type=ZIP_STORED)
-            self._write_container()
-            self._write_opf()
-            self._write_items()
+            opf = self.book.opf
+            opf_path = join_path(self.book.package_dir, opf.file_name)
+            self.out.writestr(self.zipinfo(CONTAINER_PATH), OCFContainer.get_content(opf_path))
+            self.out.writestr(self.zipinfo(opf_path), opf.get_content(self.book, **self.options))
+            for item in self.book.get_items():
+                if isinstance(item, EpubNcx):
+                    self.out.writestr(self.zipinfo(f"{self.book.package_dir}/{item.file_name}"),
+                                    self._get_ncx())
+                elif isinstance(item, EpubNav):
+                    self.out.writestr(self.zipinfo(f"{self.book.package_dir}/{item.file_name}"),
+                                    self._get_nav(item))
+                elif item.manifest:
+                    self.out.writestr(self.zipinfo(f"{self.book.package_dir}/{item.file_name}"),
+                                    item.get_content())
+                else:
+                    self.out.writestr(self.zipinfo(item.file_name),
+                                    item.get_content())
 
 
 def write_epub(name: EpubTarget, book: EpubBook, options: dict[str, Any] | None = None) -> bool:

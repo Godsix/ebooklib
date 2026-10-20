@@ -17,7 +17,7 @@
 from lxml import etree
 
 from ..epub import EpubImage
-from ..utils import parse_html, xml_tostring
+from ..utils import parse_xhtml_to_html, xhtml_tostring
 from .base import BasePlugin
 
 # TODO:
@@ -270,14 +270,13 @@ class SyntaxPlugin(BasePlugin):
 
     def html_before_write(self, book, chapter):
         try:
-            tree = parse_html(chapter.content)
+            tree = parse_xhtml_to_html(chapter.content)
         except Exception:  # pylint: disable=broad-exception-caught
             return
 
         # delete deprecated tags
         # i should really have a list of allowed tags
-        for tag in DEPRECATED_TAGS:
-            etree.strip_tags(tree.getroottree(), tag)
+        etree.strip_tags(tree, *DEPRECATED_TAGS)
 
         head = tree.find("head")
 
@@ -366,5 +365,5 @@ class SyntaxPlugin(BasePlugin):
                     case _:
                         leave_only(child, *ATTRIBUTES_GLOBAL)
 
-        chapter.content = xml_tostring(tree)
+        chapter.content = xhtml_tostring(tree)
         return chapter.content

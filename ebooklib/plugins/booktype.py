@@ -19,7 +19,7 @@ from urllib.parse import urljoin, urlparse
 
 from lxml import etree
 
-from ..utils import get_qname, parse_html
+from ..utils import get_qname, parse_xhtml_to_html, xhtml_tostring
 from .base import BasePlugin
 
 
@@ -31,7 +31,7 @@ class BooktypeLinks(BasePlugin):
 
     def html_before_write(self, book, chapter):
         try:
-            tree = parse_html(chapter.content)
+            tree = parse_xhtml_to_html(chapter.content)
         except Exception:  # pylint: disable=broad-exception-caught
             return
 
@@ -66,7 +66,7 @@ class BooktypeLinks(BasePlugin):
                         child.set("id", name)
                         etree.strip_attributes(child, "name")
 
-        chapter.content = etree.tostring(tree, pretty_print=True, encoding="utf-8")
+        chapter.content = xhtml_tostring(tree)
 
 
 class BooktypeFootnotes(BasePlugin):
@@ -77,7 +77,7 @@ class BooktypeFootnotes(BasePlugin):
 
     def html_before_write(self, book, chapter):
         try:
-            tree = parse_html(chapter.content)
+            tree = parse_xhtml_to_html(chapter.content)
         except Exception:  # pylint: disable=broad-exception-caught
             return
 
@@ -114,4 +114,4 @@ class BooktypeFootnotes(BasePlugin):
             if len(old_footnote) > 0:
                 body.remove(old_footnote[0])
 
-        chapter.content = etree.tostring(tree, pretty_print=True, encoding="utf-8")
+        chapter.content = xhtml_tostring(tree)

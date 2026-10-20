@@ -125,7 +125,7 @@ CONTAINER_PATH = "META-INF/container.xml"
 CONTAINER_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
   <rootfiles>
-    <rootfile full-path="%(folder_name)s/content.opf" media-type="application/oebps-package+xml"/>
+    <rootfile full-path="%(opf_path)s" media-type="application/oebps-package+xml"/>
   </rootfiles>
 </container>
 """
