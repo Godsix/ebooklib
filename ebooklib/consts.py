@@ -87,6 +87,15 @@ DC_ELEMENTS = frozenset({
     "rights",
 })
 
+
+XML_ENCODING = 'UTF-8'
+XHTML5_DOCTYPE = '<!DOCTYPE html>'
+XHTML11_DOCTYPE = (
+    '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" '
+    '"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">'
+)
+
+
 NAMESPACES: dict[str, str] = {
     "XML": "http://www.w3.org/XML/1998/namespace",
     "EPUB": "http://www.idpf.org/2007/ops",
@@ -95,6 +104,8 @@ NAMESPACES: dict[str, str] = {
     "CONTAINERNS": "urn:oasis:names:tc:opendocument:xmlns:container",
     "DC": "http://purl.org/dc/elements/1.1/",
     "XHTML": "http://www.w3.org/1999/xhtml",
+    "SVG": "http://www.w3.org/2000/svg",
+    "MATH": "http://www.w3.org/1998/Math/MathML",
 }
 
 # EPUB creators MAY use the following prefixes in package document attributes

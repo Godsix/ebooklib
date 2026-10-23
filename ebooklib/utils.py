@@ -22,10 +22,10 @@ from os import PathLike
 from pathlib import Path
 
 from lxml import etree
-from lxml.etree import QName, XMLParser, XMLSyntaxError  # pylint: disable=E0611
+from lxml.etree import QName, XMLParser, XMLSyntaxError, DocInfo  # pylint: disable=E0611
 from lxml.html import HTMLParser, XHTMLParser, document_fromstring, html_to_xhtml, xhtml_to_html
 
-from .consts import NAMESPACES
+from .consts import NAMESPACES, XML_ENCODING, XHTML5_DOCTYPE
 from .pytype import ElementTree, HtmlElement, XmlElement
 
 LXML_DECLARATION = re.compile(b"<\\?xml[^>]+?\\?>")
@@ -169,21 +169,29 @@ parse_html_string = parse_html
 def xml_tostring(node, **kwargs) -> bytes:
     '''Convert XML node to string.'''
     kwargs.setdefault('pretty_print', True)
-    kwargs.setdefault('encoding', 'UTF-8')
+    kwargs.setdefault('encoding', XML_ENCODING)
     kwargs.setdefault('xml_declaration', True)
     text = etree.tostring(node, **kwargs)
     return format_xml_declaration(text)
 
 
+def _docinfo(node, key: str, default: str | None = None) -> str | None:
+    docinfo: DocInfo | None = getattr(node, 'docinfo', None)
+    if docinfo is None:
+        return default
+    value: str | None = getattr(docinfo, key, None)
+    if value:
+        return value
+    return default
+
 def xhtml_tostring(node, **kwargs) -> bytes:
     '''Convert XHTML node to string.'''
     kwargs.setdefault('pretty_print', True)
-    kwargs.setdefault('encoding', 'UTF-8')
     kwargs.setdefault('xml_declaration', True)
-    if hasattr(node, 'docinfo') and node.docinfo.doctype:
-        kwargs.setdefault('doctype', node.docinfo.doctype)
-    else:
-        kwargs.setdefault('doctype', '<!DOCTYPE html>')
+    kwargs.setdefault('encoding',
+                      _docinfo(node, 'encoding', XML_ENCODING))
+    kwargs.setdefault('doctype',
+                      _docinfo(node, 'doctype', XHTML5_DOCTYPE))
     html_to_xhtml(node)
     text = etree.tostring(node, **kwargs)
     return format_xml_declaration(text)

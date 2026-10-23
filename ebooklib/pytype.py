@@ -65,6 +65,6 @@ class FileReader(Protocol):
         ''' Enter context '''
         ...
 
-    def __exit__(self, type, value, traceback):
+    def __exit__(self, type_, value, traceback):
         ''' Exit context '''
         ...

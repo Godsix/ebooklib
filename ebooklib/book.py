@@ -43,6 +43,7 @@ class EpubBook:
     FOLDER_NAME: str = "EPUB"
 
     def __init__(self) -> None:
+        self.direction: str | None
         self.reset()
 
         # we should have options here
@@ -64,7 +65,14 @@ class EpubBook:
     @identifier_id.setter
     def identifier_id(self, value: str | None):
         """Sets the identifier id of this book."""
+        o = self.identifier_id
         set_optional_attr(self, "_identifier_id", value)
+        n = self.identifier_id
+        if o != n:
+            data = self.get_metadata("DC", "identifier")
+            it = (v for _, v in data if v and v.get("id") == o)
+            if attrib := next(it, None):
+                attrib["id"] = n
 
     @property
     def package_dir(self) -> str:
@@ -81,9 +89,9 @@ class EpubBook:
         self.opf: OPF = OPF()
         # EPUB version as read from the package document (e.g. "3.0").
         # Set by EpubReader when loading an existing book.
-        self.version: str | None = None
-        self.identifier_id: str | None = None
-        self.package_dir: str | None = None
+        self.version: str = None
+        self.identifier_id: str = None
+        self.package_dir: str = None
 
         self.metadata: dict[str | None, dict[str, list[Any]]] = {}
         self.items: list[EpubItem] = []
@@ -98,9 +106,7 @@ class EpubBook:
         self._id_static = 0
         self._id_creator = 0
 
-        self.title = ""
-        self.language = "en"
-        self.direction: str | None = None
+        self.direction = None
 
         self.templates: dict[str, bytes] = {
             "ncx": NCX_XML,
@@ -137,6 +143,25 @@ class EpubBook:
         else:
             self._prefixes = value
 
+    @property
+    def uid(self) -> str:
+        """Returns the identifier of this book."""
+        data = self.get_metadata("DC", "identifier")
+        it = (k for k, v in data if v and v.get("id") == self.identifier_id)
+        return next(it, None)
+
+    @uid.setter
+    def uid(self, value: str):
+        """Returns the identifier of this book."""
+        result = self._get_metadata("DC").setdefault("identifier", [])
+        item = (value, {"id": self.identifier_id})
+        for i, (_, v) in enumerate(result):
+            if v.get("id") == self.identifier_id:
+                result[i] = item
+                break
+        else:
+            result.append(item)
+
     def set_identifier(self, uid: str) -> None:
         """
         Sets unique id for this epub
@@ -144,10 +169,27 @@ class EpubBook:
         :Args:
           - uid: Value of unique identifier for this book
         """
-
         self.uid = uid
 
-        self.set_unique_metadata("DC", "identifier", self.uid, {"id": self.IDENTIFIER_ID})
+    def _get_meta_attr(self,
+                       namespace: str | None,
+                       name: str,
+                       defaut: Any = None) -> Any:
+        """ Returns the value of a metadata item."""
+        result = self.get_metadata(namespace, name)
+        if result:
+            return result[-1][0]
+        return defaut
+
+    @property
+    def title(self) -> str:
+        """Returns the title of this book."""
+        return self._get_meta_attr("DC", "title", "")
+
+    @title.setter
+    def title(self, value: str):
+        """Returns the title of this book."""
+        self.add_metadata("DC", "title", value)
 
     def set_title(self, title: str) -> None:
         """
@@ -156,10 +198,17 @@ class EpubBook:
         :Args:
           - title: Title value
         """
-
         self.title = title
 
-        self.add_metadata("DC", "title", self.title)
+    @property
+    def language(self) -> str:
+        """Returns the language of this book."""
+        return self._get_meta_attr("DC", "language", "en")
+
+    @language.setter
+    def language(self, value: str):
+        """Returns the language of this book."""
+        self.add_metadata("DC", "language", value)
 
     def set_language(self, lang: str) -> None:
         """
@@ -169,10 +218,7 @@ class EpubBook:
         :Args:
           - lang: Language code
         """
-
         self.language = lang
-
-        self.add_metadata("DC", "language", lang)
 
     def set_direction(self, direction: str | None) -> None:
         """
@@ -238,7 +284,7 @@ class EpubBook:
         ns_map = self._get_metadata(namespace)
         ns_map.setdefault(name, []).append((value, others))
 
-    def get_metadata(self, namespace: str | None, name: str) -> list:
+    def get_metadata(self, namespace: str | None, name: str) -> list[tuple[str, dict | None]]:
         """Retrieve metadata"""
         ns_map = self._get_metadata(namespace)
         return ns_map.get(name, [])
@@ -370,7 +416,7 @@ class EpubBook:
 
         self.templates[name] = value
 
-    def get_template(self, name: str) -> bytes | None:
+    def get_template(self, name: str, default: bytes | None = None) -> bytes | None:
         """
         Returns value for the template.
 
@@ -380,7 +426,7 @@ class EpubBook:
         :Returns:
           Value of the template.
         """
-        return self.templates.get(name)
+        return self.templates.get(name, default)
 
     def add_prefix(self, name: str, uri: str) -> None:
         """

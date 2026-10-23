@@ -45,6 +45,8 @@ from .utils import get_qname, join_path, parse_xhtml, parse_xml, xml_tostring
 if TYPE_CHECKING:
     from .book import EpubBook
 
+_VERSION = ".".join([str(s) for s in VERSION])
+
 _DURATION_UNITS = {
     "ms": Decimal("0.001"),
     "s": Decimal(1),
@@ -127,6 +129,12 @@ class OPF(FileObject):
             for _, attrib in self._iter_metadata(book)
         )
 
+    def _has_meta_name(self, book: EpubBook, name: str) -> bool:
+        return any(
+            attrib and attrib.get("name") == name
+            for _, attrib in self._iter_metadata(book)
+        )
+
     def _dump_package(self, book: EpubBook, **options):
         attrib = {
             "version": book.EPUB_VERSION,
@@ -174,12 +182,14 @@ class OPF(FileObject):
                                   {"property": "dcterms:modified"})
             el.text = mtime_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        if not self._has_meta_property(book, "dcterms:provenance"):
-            version = ".".join([str(s) for s in VERSION])
+        # if not self._has_meta_property(book, "dcterms:provenance"):
+        #     el = etree.SubElement(metadata, QName(metadata, "meta"),
+        #                           {"property": "dcterms:provenance"})
+        #     el.text = f"Ebook-lib {_VERSION}"
+        if not self._has_meta_name(book, "generator"):
             el = etree.SubElement(metadata, QName(metadata, "meta"),
-                                  {"property": "dcterms:provenance"})
-            el.text = f"Ebook-lib {version}"
-
+                                  {"name": "generator",
+                                   "content": f"Ebook-lib {_VERSION}"})
         self.metadata = metadata
 
     def _dump_manifest(self, book: EpubBook, **options):
@@ -205,7 +215,7 @@ class OPF(FileObject):
             else:
                 properties = getattr(item, "properties", None)
                 if properties:
-                    attrib["properties"] = " ".join(properties)
+                    attrib["properties"] = " ".join(dict.fromkeys(properties))
 
                 media_overlay = getattr(item, "media_overlay", None)
                 if media_overlay is not None:
@@ -368,14 +378,6 @@ class OPF(FileObject):
 
         book.metadata = nsdict
 
-        titles = book.get_metadata("DC", "title")
-        if len(titles) > 0:
-            book.title = titles[0][0]
-
-        for value, others in book.get_metadata("DC", "identifier"):
-            if others.get("id") == book.identifier_id:
-                book.uid = value
-
     @staticmethod
     def _cover_image_name(content: bytes | str) -> str:
         """Return the image path referenced by a cover XHTML document."""
@@ -398,7 +400,7 @@ class OPF(FileObject):
             uid = el.get("id")
             href = unquote(el.get("href", ""))
             media_type = el.get("media-type") or ""
-            properties = [x for x in el.get("properties", "").split(" ") if x]
+            properties = dict.fromkeys(x for x in el.get("properties", "").split(" ") if x)
 
             # people use wrong content types
             if media_type == "image/jpg":
@@ -425,7 +427,7 @@ class OPF(FileObject):
                     item.media_overlay = el.get("media-overlay", None)
                     item.media_duration = el.get("duration", None)
                     item.content = self._read(reader, opf_dir, item.file_name)
-                    item.properties = properties
+                    item.properties = list(properties)
             elif media_type in IMAGE_MEDIA_TYPES:
                 if "cover-image" in properties:
                     item = EpubCover(uid=uid, file_name=href, media_type=media_type)
